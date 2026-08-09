@@ -15,10 +15,7 @@ with GitHub CLI after the source revision has been pushed:
 
 ```sh
 # Deploy the current private deploy branch.
-git -C ../aalookup fetch origin deploy
-source_sha="$(git -C ../aalookup rev-parse origin/deploy)"
-gh workflow run deploy.yml --repo lonelam/aalookup-hub \
-  -f source_sha="$source_sha"
+npm --prefix ../aalookup run app:deploy
 
 # Publish a tagged private source revision as a public release.
 version=v0.4.0

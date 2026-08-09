@@ -1,11 +1,18 @@
 name: Deploy server and website
 
+run-name: Deploy ${{ inputs.source_sha }} [${{ inputs.request_id }}]
+
 on:
   workflow_dispatch:
     inputs:
       source_sha:
         description: Exact commit SHA from lonelam/aalookup to deploy
         required: true
+        type: string
+      request_id:
+        description: Unique caller ID used to find this workflow run
+        required: false
+        default: manual
         type: string
 
 permissions:
@@ -53,6 +60,13 @@ jobs:
             echo "Checked out $checked_out_sha instead of requested $SOURCE_SHA" >&2
             exit 1
           fi
+
+      - name: Verify deployment entrypoint
+        run: |
+          test -f scripts/deploy-production.sh || {
+            echo "The source revision predates the Actions migration; update deploy from main." >&2
+            exit 1
+          }
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -111,14 +125,12 @@ jobs:
           tar -C deploy -czf "aalookup-${SOURCE_SHA}.tar.gz" .
 
       - name: Check current deploy revision
-        id: revision
         env:
           EXPECTED_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
           SOURCE_REPOSITORY: lonelam/aalookup
         run: |
           set -euo pipefail
-          should_deploy=true
           current_sha="$(
             curl --fail --silent --show-error \
               -H "Accept: application/vnd.github+json" \
@@ -127,13 +139,11 @@ jobs:
               | jq --exit-status --raw-output '.sha'
           )"
           if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
-            echo "A newer deploy revision exists; this deployment is skipped."
-            should_deploy=false
+            echo "A newer deploy revision exists; run app:deploy again." >&2
+            exit 1
           fi
-          echo "should-deploy=$should_deploy" >> "$GITHUB_OUTPUT"
 
       - name: Deploy production
-        if: steps.revision.outputs.should-deploy == 'true'
         env:
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
