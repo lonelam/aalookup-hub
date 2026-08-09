@@ -7,7 +7,7 @@ that exact revision with a read-only credential.
 
 ## Run the workflows
 
-Both workflows are manual-only. They can be started from the Actions page or
+The workflows are manual-only. They can be started from the Actions page or
 with GitHub CLI after the source revision has been pushed:
 
 ```sh
@@ -23,6 +23,11 @@ source_sha="$(git -C ../aalookup rev-parse "${version}^{commit}")"
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f version="$version" \
   -f source_sha="$source_sha"
+
+# Refresh an already-published version without rebuilding it.
+gh workflow run release.yml --repo lonelam/aalookup-hub \
+  -f operation=refresh \
+  -f version="$version"
 ```
 
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.

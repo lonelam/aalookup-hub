@@ -1,13 +1,21 @@
 name: Release
 
-run-name: Release ${{ inputs.version }} from ${{ inputs.source_sha }}
+run-name: ${{ inputs.operation == 'refresh' && format('Refresh mirror for {0}', inputs.version) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
 
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: Build a release or only refresh the production release mirror
+        required: true
+        default: release
+        type: choice
+        options:
+          - release
+          - refresh
       source_sha:
         description: Exact lowercase commit SHA from lonelam/aalookup
-        required: true
+        required: false
         type: string
       version:
         description: Stable release version including the v prefix (for example, v0.3.11)
@@ -23,6 +31,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve private source
+    if: ${{ inputs.operation == 'release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {}
@@ -478,15 +487,33 @@ jobs:
             -F draft=false \
             --raw-field make_latest=true >/dev/null
 
+  refresh:
+    name: Refresh production release mirror
+    needs: release
+    if: ${{ always() && (inputs.operation == 'refresh' || needs.release.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+
+    steps:
       - name: Tell the release mirror to refresh
         env:
           REFRESH_TOKEN: ${{ secrets.AALOOKUP_RELEASE_REFRESH_TOKEN }}
           ORIGIN: ${{ vars.AALOOKUP_UPDATE_ORIGIN || 'https://aalookup.laizn.cc' }}
-          VERSION: ${{ needs.resolve.outputs.version }}
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -uo pipefail
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "version must be v followed by a stable SemVer version" >&2
+            exit 1
+          fi
           if [[ -z "${REFRESH_TOKEN:-}" ]]; then
-            echo "No AALOOKUP_RELEASE_REFRESH_TOKEN secret; the mirror will pick this up on its next refresh."
+            if [[ "$OPERATION" == "refresh" ]]; then
+              echo "AALOOKUP_RELEASE_REFRESH_TOKEN is required for an explicit refresh" >&2
+              exit 1
+            fi
+            echo "::warning::No AALOOKUP_RELEASE_REFRESH_TOKEN secret; the mirror will pick this up on its next refresh."
             exit 0
           fi
           encoded_version="$(jq --null-input --raw-output --arg version "$VERSION" '$version | @uri')"
@@ -501,4 +528,8 @@ jobs:
             fi
             sleep $((attempt * 5))
           done
+          if [[ "$OPERATION" == "refresh" ]]; then
+            echo "Could not explicitly refresh the release mirror" >&2
+            exit 1
+          fi
           echo "::warning::Could not reach the release mirror; it will refresh on its own schedule."
