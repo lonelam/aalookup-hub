@@ -25,8 +25,6 @@ jobs:
     name: Resolve private source
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment:
-      name: release
     permissions: {}
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
@@ -147,8 +145,6 @@ jobs:
     needs: resolve
     runs-on: macos-14
     timeout-minutes: 90
-    environment:
-      name: release
     permissions: {}
 
     steps:
@@ -234,8 +230,6 @@ jobs:
     needs: resolve
     runs-on: windows-2022
     timeout-minutes: 60
-    environment:
-      name: release
     permissions: {}
 
     steps:
@@ -292,8 +286,6 @@ jobs:
       - windows
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment:
-      name: release
     permissions:
       contents: write
 

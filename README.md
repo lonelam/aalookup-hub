@@ -34,17 +34,15 @@ built.
 
 ## Repository configuration
 
-Create `AALOOKUP_SOURCE_TOKEN` as an environment secret in both `release` and
-`production`. It is a long-lived fine-grained personal access token restricted
-to `lonelam/aalookup` with only **Contents: read** permission. Use no expiration
-when the account policy allows it; otherwise use the longest permitted lifetime
-and rotate both environment secrets together. The checkout action consumes this
-token directly on every runner, including Windows, and does not persist it in
-the checked-out repository.
+Create `AALOOKUP_SOURCE_TOKEN` as a repository secret. It is a long-lived
+fine-grained personal access token restricted to `lonelam/aalookup` with only
+**Contents: read** permission. Use no expiration when the account policy allows
+it; otherwise use the longest permitted lifetime and rotate the same secret.
+The checkout action consumes this token directly on every runner, including
+Windows, and does not persist it in the checked-out repository.
 
-Create a `release` environment with these secrets:
+Create these repository secrets for release builds:
 
-- `AALOOKUP_SOURCE_TOKEN`
 - `AALOOKUP_CLIENT_TOKEN`
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
@@ -53,7 +51,7 @@ Create a `release` environment with these secrets:
 - `APPLE_SIGNING_IDENTITY` (required when `APPLE_CERTIFICATE` is set)
 - `AALOOKUP_RELEASE_REFRESH_TOKEN` (optional)
 
-The `release` environment may define `AALOOKUP_UPDATE_ORIGIN`. It defaults to
+The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It defaults to
 `https://aalookup.laizn.cc`.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
@@ -63,7 +61,6 @@ repository permissions.
 
 Create a protected `production` environment with these secrets:
 
-- `AALOOKUP_SOURCE_TOKEN`
 - `DEPLOY_SSH_PRIVATE_KEY`
 - `DEPLOY_KNOWN_HOSTS`
 - `DEPLOY_HOST`
@@ -81,4 +78,4 @@ GITHUB_REPOSITORY=lonelam/aalookup-hub
 Repository and environment secrets are available to anyone who can replace a
 trusted workflow with code that exports them. Keep write access narrow, protect
 the default branch, require review for `.github/workflows/**`, and add required
-reviewers to both environments.
+reviewers to the `production` environment.
