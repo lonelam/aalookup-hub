@@ -1,0 +1,488 @@
+name: Release
+
+run-name: Release ${{ inputs.version }} from ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact lowercase commit SHA from lonelam/aalookup
+        required: true
+        type: string
+      version:
+        description: Stable release version including the v prefix (for example, v0.3.11)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve private source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: release
+    permissions: {}
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      version: ${{ steps.source.outputs.version }}
+
+    steps:
+      - name: Validate inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const sourceSha = process.env.SOURCE_SHA;
+          const version = process.env.VERSION;
+          const semver = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+          if (!/^[0-9a-f]{40}$/.test(sourceSha)) {
+            throw new Error("source_sha must be exactly 40 lowercase hexadecimal characters");
+          }
+          if (!semver.test(version)) {
+            throw new Error("version must be v followed by a stable SemVer version");
+          }
+          NODE
+
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source identity and versions
+        id: source
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          SOURCE_REPOSITORY: lonelam/aalookup
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git rev-parse HEAD)"
+          if [[ "$resolved_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Resolved source $resolved_sha does not match requested source $EXPECTED_SHA" >&2
+            exit 1
+          fi
+
+          expected_version="${VERSION#v}"
+          package_version="$(jq --exit-status --raw-output '.version | select(type == "string")' package.json)"
+          tauri_version="$(jq --exit-status --raw-output '.version | select(type == "string")' src-tauri/tauri.conf.json)"
+          cargo_version="$(
+            sed -n 's/^version = "\([^"]*\)"$/\1/p' src-tauri/Cargo.toml \
+              | head -n 1
+          )"
+          test -n "$cargo_version" || {
+            echo "Could not read the package version from src-tauri/Cargo.toml" >&2
+            exit 1
+          }
+
+          for pair in \
+            "package.json:$package_version" \
+            "src-tauri/tauri.conf.json:$tauri_version" \
+            "src-tauri/Cargo.toml:$cargo_version"; do
+            file="${pair%%:*}"
+            actual="${pair#*:}"
+            if [[ "$actual" != "$expected_version" ]]; then
+              echo "$file version $actual does not match requested version $expected_version" >&2
+              exit 1
+            fi
+          done
+
+          encoded_version="$(jq --null-input --raw-output --arg version "$VERSION" '$version | @uri')"
+          tag_object="$(
+            curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${SOURCE_REPOSITORY}/git/ref/tags/${encoded_version}"
+          )"
+          tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_object")"
+          tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_object")"
+          for _depth in 1 2 3 4 5; do
+            if [[ "$tag_type" == "commit" ]]; then
+              break
+            fi
+            if [[ "$tag_type" != "tag" ]]; then
+              echo "$VERSION points to unsupported Git object type $tag_type" >&2
+              exit 1
+            fi
+            tag_object="$(
+              curl --fail --silent --show-error \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${SOURCE_REPOSITORY}/git/tags/${tag_sha}"
+            )"
+            tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_object")"
+            tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_object")"
+          done
+          if [[ "$tag_type" != "commit" ]]; then
+            echo "$VERSION did not resolve to a commit after five tag objects" >&2
+            exit 1
+          fi
+          if [[ "$tag_sha" != "$resolved_sha" ]]; then
+            echo "$VERSION points to $tag_sha instead of requested source $resolved_sha" >&2
+            exit 1
+          fi
+
+          {
+            echo "source_sha=$resolved_sha"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS (arm64 + x64 + universal)
+    needs: resolve
+    runs-on: macos-14
+    timeout-minutes: 90
+    environment:
+      name: release
+    permissions: {}
+
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Import Apple signing certificate (optional)
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
+            echo "No APPLE_CERTIFICATE secret; DMG will be ad-hoc signed (Open Anyway)."
+            exit 0
+          fi
+          if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+            echo "APPLE_SIGNING_IDENTITY is required when APPLE_CERTIFICATE is set" >&2
+            exit 1
+          fi
+
+          CERT_PATH="$RUNNER_TEMP/aalookup-cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/aalookup.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "${APPLE_CERTIFICATE_PASSWORD:-}" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build and collect arm64, x86_64, and universal artifacts
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash scripts/release-macos.sh
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aalookup-macos
+          path: dist-release/*
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    name: Windows (x64)
+    needs: resolve
+    runs-on: windows-2022
+    timeout-minutes: 60
+    environment:
+      name: release
+    permissions: {}
+
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and collect NSIS installer
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: pwsh
+        run: "& \"$PWD/scripts/release-windows.ps1\""
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aalookup-windows
+          path: dist-release/*
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    name: Publish public GitHub Release
+    needs:
+      - resolve
+      - macos
+      - windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aalookup-macos
+          path: dist-release
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aalookup-windows
+          path: dist-release
+
+      - name: Stage and publish immutable public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PRIVATE_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          PUBLIC_WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          expected=(
+            AALookup-macos-aarch64.dmg
+            AALookup-macos-aarch64.zip
+            AALookup-macos-universal.dmg
+            AALookup-macos-universal.zip
+            AALookup-macos-x86_64.dmg
+            AALookup-macos-x86_64.zip
+            AALookup-windows-x86_64-setup.exe
+            AALookup-windows-x86_64-setup.exe.sig
+          )
+          for asset in "${expected[@]}"; do
+            test -f "dist-release/$asset" || {
+              echo "Missing release asset dist-release/$asset" >&2
+              exit 1
+            }
+          done
+          if [[ "$(find dist-release -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne "${#expected[@]}" ]]; then
+            echo "Unexpected files found in dist-release" >&2
+            find dist-release -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          ## Install (Windows)
+
+          Download \`AALookup-windows-x86_64-setup.exe\`. The installer is not code-signed,
+          so Windows may show a Microsoft Defender SmartScreen warning.
+
+          From this version on, AALookup checks for updates by itself and installs the next
+          one on a single click. The \`.sig\` file contains the update signature; there is
+          no need to download it.
+
+          ## Install (macOS)
+
+          Download one of:
+
+          | File | Machine |
+          | --- | --- |
+          | \`AALookup-macos-universal.dmg\` | Any Mac (recommended) |
+          | \`AALookup-macos-aarch64.dmg\` | Apple Silicon |
+          | \`AALookup-macos-x86_64.dmg\` | Intel |
+
+          1. Open the \`.dmg\`, then drag **AALookup** to Applications.
+          2. If first launch is blocked, right-click the app and choose **Open**, or use
+             **System Settings -> Privacy & Security -> Open Anyway**.
+          3. Grant **Accessibility** and, if you enable OCR, **Screen Recording**.
+
+          If macOS still says the app is damaged, clear the download quarantine:
+
+          \`\`\`bash
+          xattr -dr com.apple.quarantine /Applications/AALookup.app
+          \`\`\`
+
+          Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`.
+          Public workflow commit: \`${PUBLIC_WORKFLOW_SHA}\`.
+          EOF
+
+          release_json=""
+          if release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" 2>/dev/null
+          )"; then
+            if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
+              echo "$VERSION is already published and cannot be replaced" >&2
+              exit 1
+            fi
+            source_marker="Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`."
+            existing_notes="$(jq --exit-status --raw-output '.body // ""' <<< "$release_json")"
+            if [[ "$existing_notes" != *"$source_marker"* ]]; then
+              echo "Existing draft $VERSION belongs to a different private source" >&2
+              exit 1
+            fi
+          fi
+
+          tag_json=""
+          if tag_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" 2>/dev/null
+          )"; then
+            if [[ -z "$release_json" ]]; then
+              tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_json")"
+              tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_json")"
+              if [[ "$tag_type" != "commit" || "$tag_sha" != "$PUBLIC_WORKFLOW_SHA" ]]; then
+                echo "Existing public tag $VERSION is not owned by this release run" >&2
+                exit 1
+              fi
+            fi
+          else
+            if [[ -n "$release_json" ]]; then
+              echo "Draft release $VERSION has lost its public tag" >&2
+              exit 1
+            fi
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${VERSION}" \
+              -f sha="$PUBLIC_WORKFLOW_SHA" >/dev/null
+          fi
+
+          if [[ -z "$release_json" ]]; then
+            gh release create "$VERSION" \
+              --verify-tag \
+              --title "$VERSION" \
+              --notes-file "$notes" \
+              --draft
+          else
+            gh release edit "$VERSION" \
+              --title "$VERSION" \
+              --notes-file "$notes" \
+              --draft
+          fi
+
+          # Clobber is legal only while the release is an unpublished draft. It
+          # makes a failed upload retryable without ever rewriting a public asset.
+          gh release upload "$VERSION" dist-release/* --clobber
+
+          release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}"
+          )"
+          if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
+            echo "$VERSION became public before its assets were verified" >&2
+            exit 1
+          fi
+          release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
+          assets_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100"
+          )"
+          expected_manifest="$(printf '%s\n' "${expected[@]}" | sort)"
+          actual_manifest="$(
+            jq --exit-status --raw-output '
+              if all(.[]; .size > 0)
+              then sort_by(.name) | .[].name
+              else error("release contains an empty asset")
+              end
+            ' <<< "$assets_json"
+          )"
+          if [[ "$actual_manifest" != "$expected_manifest" ]]; then
+            echo "Draft release assets do not match the expected immutable manifest" >&2
+            diff \
+              <(printf '%s\n' "$expected_manifest") \
+              <(printf '%s\n' "$actual_manifest") >&2 || true
+            exit 1
+          fi
+
+          gh release edit "$VERSION" --draft=false --latest
+
+      - name: Tell the release mirror to refresh
+        env:
+          REFRESH_TOKEN: ${{ secrets.AALOOKUP_RELEASE_REFRESH_TOKEN }}
+          ORIGIN: ${{ vars.AALOOKUP_UPDATE_ORIGIN || 'https://aalookup.laizn.cc' }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -uo pipefail
+          if [[ -z "${REFRESH_TOKEN:-}" ]]; then
+            echo "No AALOOKUP_RELEASE_REFRESH_TOKEN secret; the mirror will pick this up on its next refresh."
+            exit 0
+          fi
+          encoded_version="$(jq --null-input --raw-output --arg version "$VERSION" '$version | @uri')"
+          for attempt in 1 2 3; do
+            status="$(curl --silent --show-error --output /dev/stderr --write-out '%{http_code}' \
+              --max-time 20 --request POST \
+              --header "Authorization: Bearer $REFRESH_TOKEN" \
+              "${ORIGIN%/}/api/v1/releases/refresh?version=$encoded_version" || echo "000")"
+            echo "attempt $attempt: HTTP $status"
+            if [[ "$status" == "202" ]]; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::warning::Could not reach the release mirror; it will refresh on its own schedule."

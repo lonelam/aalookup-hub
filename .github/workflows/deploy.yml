@@ -1,0 +1,145 @@
+name: Deploy server and website
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact commit SHA from lonelam/aalookup to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+
+    steps:
+      - name: Validate source revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+
+      - name: Checkout private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Verify checked out revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse --verify HEAD)"
+          if [[ "$checked_out_sha" != "$SOURCE_SHA" ]]; then
+            echo "Checked out $checked_out_sha instead of requested $SOURCE_SHA" >&2
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes file musl-tools
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: aalookup-server
+
+      - name: Install website dependencies
+        run: npm ci
+
+      - name: Verify audited study mirror
+        run: npm run study:content:verify
+
+      - name: Verify deployment architecture
+        run: npm run architecture:test
+
+      - name: Build website
+        run: npm run site:build
+
+      - name: Test server
+        run: cargo test --locked -p aalookup-server
+
+      - name: Build server
+        run: >-
+          cargo build --locked --release -p aalookup-server
+          --target x86_64-unknown-linux-musl
+
+      - name: Package deployment
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          server_binary="target/x86_64-unknown-linux-musl/release/aalookup-server"
+          file "$server_binary" | tee /dev/stderr \
+            | grep --quiet --extended-regexp "static(ally|-pie)? linked"
+
+          install -d deploy/website
+          install -m 0755 "$server_binary" deploy/aalookup-server
+          cp -a website/dist/. deploy/website/
+          tar -C deploy -czf "aalookup-${SOURCE_SHA}.tar.gz" .
+
+      - name: Check current deploy revision
+        id: revision
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          SOURCE_REPOSITORY: lonelam/aalookup
+        run: |
+          set -euo pipefail
+          should_deploy=true
+          current_sha="$(
+            curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${SOURCE_REPOSITORY}/commits/deploy" \
+              | jq --exit-status --raw-output '.sha'
+          )"
+          if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
+            echo "A newer deploy revision exists; this deployment is skipped."
+            should_deploy=false
+          fi
+          echo "should-deploy=$should_deploy" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy production
+        if: steps.revision.outputs.should-deploy == 'true'
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: bash scripts/deploy-production.sh
