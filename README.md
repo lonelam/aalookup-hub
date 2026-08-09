@@ -1,83 +1,53 @@
-# AALookup Hub
+# AALookup
 
-Public releases, web frontends, and automation tools for AALookup.
+**看懂生词，不用跳出原文。**
 
-The application source remains in the private `lonelam/aalookup` repository.
-Workflows in this repository accept an immutable source commit SHA, check out
-that exact revision with a read-only credential, and either deploy the service
-or publish desktop installers here. Platform-specific build and deployment
-scripts stay with the private source and are executed only after that checkout.
+AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把指针移到
+生词上，通过触控板手势或快捷键唤起面板，它会在原文旁给出贴合当前句子的
+解释，让阅读保持连贯。
 
-## Run the workflows
+[产品主页](https://aalookup.laizn.cc) ·
+[下载最新版](https://aalookup.laizn.cc/#download) ·
+[在线学习](https://aalookup.laizn.cc/learn)
 
-Both workflows are manual-only. They can be started from the Actions page or
-with GitHub CLI after the source revision has been pushed:
+![AALookup 在论文原文旁解释当前语境中的单词](https://aalookup.laizn.cc/hero/paper-1600.webp)
 
-```sh
-# Deploy the private repository's pushed HEAD.
-npm --prefix ../aalookup run app:deploy
+## 阅读时，它这样工作
 
-# Or deploy any pushed private commit by its full SHA.
-npm --prefix ../aalookup run app:deploy -- <40-character-source-sha>
+1. 将鼠标指向应用、网页、PDF 或游戏画面中的单词。
+2. 在 macOS 上三指轻点触控板，或按下自定义键盘快捷键。
+3. AALookup 在单词旁展示当前语境真正需要的释义。
 
-# Publish a tagged private source revision as a public release.
-version=v0.4.0
-source_sha="$(git -C ../aalookup rev-parse "${version}^{commit}")"
-gh workflow run release.yml --repo lonelam/aalookup-hub \
-  -f version="$version" \
-  -f source_sha="$source_sha"
-```
+无需复制粘贴，也无需切换标签页。Windows 还可选择使用系统 OCR，从无法选中
+文字的图片和游戏画面中取词。
 
-The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
-The latter identifies the public workflow revision, not the application being
-built. Deployment selection never depends on the private `deploy` branch. The
-workflow checks out its SSH deployment helper from this repository, so an
-older source revision does not need to contain current Actions tooling.
+## 不只是查词
 
-## Repository configuration
+- **贴合语境的解释**：结合当前句子选择正确义项，而不是罗列整本词典。
+- **本地 MDict 词典**：使用自己的词典文件，并保留词典原有的排版与资源。
+- **模型由你选择**：可使用 AALookup 服务，或配置自己的 OpenAI 兼容服务。
+- **从阅读进入学习**：保存遇到的生词，用 FSRS 安排复习。
+- **词书训练**：通过跟写、听写和默写学习考试词汇，再进入同一复习队列。
+- **可选账号同步**：不登录也能查词；登录后可同步单词与学习进度。
 
-Create `AALOOKUP_SOURCE_TOKEN` as a repository secret. It is a long-lived
-fine-grained personal access token restricted to `lonelam/aalookup` with only
-**Contents: read** permission. Use no expiration when the account policy allows
-it; otherwise use the longest permitted lifetime and rotate the same secret.
-The checkout action consumes this token directly on every runner, including
-Windows, and does not persist it in the checked-out repository.
+## 本地优先
 
-Create these repository secrets for release builds:
+本地词典内容留在电脑上。联网解释只有在设置中明确启用后才会请求所选服务；
+查词无需账号，学习同步也由用户自行选择。
 
-- `AALOOKUP_CLIENT_TOKEN`
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-- `APPLE_CERTIFICATE` (optional)
-- `APPLE_CERTIFICATE_PASSWORD` (optional)
-- `APPLE_SIGNING_IDENTITY` (required when `APPLE_CERTIFICATE` is set)
-- `AALOOKUP_RELEASE_REFRESH_TOKEN` (optional)
+## 支持平台
 
-The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It defaults to
-`https://aalookup.laizn.cc`.
+| 平台 | 版本 | 安装包 |
+| --- | --- | --- |
+| macOS | macOS 13 或更高版本 | Universal、Apple Silicon、Intel DMG |
+| Windows | Windows 10/11 | x86_64 NSIS 安装程序 |
 
-Under **Settings -> Actions -> General -> Workflow permissions**, allow the
-workflow token to request write access. Only the final Release job requests
-`contents: write`; build and source-resolution jobs explicitly receive no
-repository permissions.
+前往 [Releases](https://github.com/lonelam/aalookup-hub/releases) 查看公开版本，
+或在 [产品主页](https://aalookup.laizn.cc/#download) 获取适合当前设备的安装包。
 
-Create a protected `production` environment with these secrets:
+## 关于这个仓库
 
-- `DEPLOY_SSH_PRIVATE_KEY`
-- `DEPLOY_KNOWN_HOSTS`
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
+这是 AALookup 的官方公开发行仓库，用于发布桌面安装包、运行产品网站与部署
+自动化。应用源代码不在本仓库公开。
 
-The `production` environment must define `DEPLOY_URL` and may define
-`DEPLOY_PORT`, which defaults to `22`.
-
-After releases move here, configure the production AALookup server with:
-
-```text
-GITHUB_REPOSITORY=lonelam/aalookup-hub
-```
-
-Repository and environment secrets are available to anyone who can replace a
-trusted workflow with code that exports them. Keep write access narrow, protect
-the default branch, require review for `.github/workflows/**`, and add required
-reviewers to the `production` environment.
+维护者可参阅 [Actions 与仓库配置](docs/automation.md)。
