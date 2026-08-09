@@ -360,9 +360,11 @@ jobs:
           EOF
 
           release_json=""
-          if release_json="$(
+          release_lookup_status=0
+          release_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" 2>/dev/null
-          )"; then
+          )" || release_lookup_status=$?
+          if (( release_lookup_status == 0 )); then
             if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
               echo "$VERSION is already published and cannot be replaced" >&2
               exit 1
@@ -373,12 +375,24 @@ jobs:
               echo "Existing draft $VERSION belongs to a different private source" >&2
               exit 1
             fi
+          else
+            release_error_status="$(
+              jq --raw-output '.status // empty' <<< "$release_json" 2>/dev/null || true
+            )"
+            if [[ "$release_error_status" != "404" ]]; then
+              echo "Could not inspect existing release $VERSION" >&2
+              printf '%s\n' "$release_json" >&2
+              exit "$release_lookup_status"
+            fi
+            release_json=""
           fi
 
           tag_json=""
-          if tag_json="$(
+          tag_lookup_status=0
+          tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" 2>/dev/null
-          )"; then
+          )" || tag_lookup_status=$?
+          if (( tag_lookup_status == 0 )); then
             if [[ -z "$release_json" ]]; then
               tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_json")"
               tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_json")"
@@ -388,6 +402,15 @@ jobs:
               fi
             fi
           else
+            tag_error_status="$(
+              jq --raw-output '.status // empty' <<< "$tag_json" 2>/dev/null || true
+            )"
+            if [[ "$tag_error_status" != "404" ]]; then
+              echo "Could not inspect public tag $VERSION" >&2
+              printf '%s\n' "$tag_json" >&2
+              exit "$tag_lookup_status"
+            fi
+            tag_json=""
             if [[ -n "$release_json" ]]; then
               echo "Draft release $VERSION has lost its public tag" >&2
               exit 1
