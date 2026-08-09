@@ -359,12 +359,23 @@ jobs:
           Public workflow commit: \`${PUBLIC_WORKFLOW_SHA}\`.
           EOF
 
+          # The release-by-tag endpoint intentionally hides unpublished drafts.
+          # Find a retryable draft through the authenticated release listing and
+          # keep its numeric ID for every operation that follows.
+          release_matches="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq --slurp --arg version "$VERSION" \
+                  '[.[][] | select(.tag_name == $version)]'
+          )"
+          release_count="$(jq --exit-status 'length' <<< "$release_matches")"
+          if (( release_count > 1 )); then
+            echo "Multiple releases unexpectedly use tag $VERSION" >&2
+            exit 1
+          fi
+
           release_json=""
-          release_lookup_status=0
-          release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" 2>/dev/null
-          )" || release_lookup_status=$?
-          if (( release_lookup_status == 0 )); then
+          if (( release_count == 1 )); then
+            release_json="$(jq --exit-status '.[0]' <<< "$release_matches")"
             if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
               echo "$VERSION is already published and cannot be replaced" >&2
               exit 1
@@ -375,16 +386,6 @@ jobs:
               echo "Existing draft $VERSION belongs to a different private source" >&2
               exit 1
             fi
-          else
-            release_error_status="$(
-              jq --raw-output '.status // empty' <<< "$release_json" 2>/dev/null || true
-            )"
-            if [[ "$release_error_status" != "404" ]]; then
-              echo "Could not inspect existing release $VERSION" >&2
-              printf '%s\n' "$release_json" >&2
-              exit "$release_lookup_status"
-            fi
-            release_json=""
           fi
 
           tag_json=""
@@ -393,13 +394,11 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" 2>/dev/null
           )" || tag_lookup_status=$?
           if (( tag_lookup_status == 0 )); then
-            if [[ -z "$release_json" ]]; then
-              tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_json")"
-              tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_json")"
-              if [[ "$tag_type" != "commit" || "$tag_sha" != "$PUBLIC_WORKFLOW_SHA" ]]; then
-                echo "Existing public tag $VERSION is not owned by this release run" >&2
-                exit 1
-              fi
+            tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_json")"
+            tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_json")"
+            if [[ "$tag_type" != "commit" || "$tag_sha" != "$PUBLIC_WORKFLOW_SHA" ]]; then
+              echo "Existing public tag $VERSION is not owned by this release run" >&2
+              exit 1
             fi
           else
             tag_error_status="$(
@@ -421,30 +420,37 @@ jobs:
           fi
 
           if [[ -z "$release_json" ]]; then
-            gh release create "$VERSION" \
-              --verify-tag \
-              --title "$VERSION" \
-              --notes-file "$notes" \
-              --draft
+            release_json="$(
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+                --raw-field tag_name="$VERSION" \
+                --raw-field target_commitish="$PUBLIC_WORKFLOW_SHA" \
+                --raw-field name="$VERSION" \
+                --raw-field body="$(< "$notes")" \
+                -F draft=true
+            )"
           else
-            gh release edit "$VERSION" \
-              --title "$VERSION" \
-              --notes-file "$notes" \
-              --draft
+            release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
+            release_json="$(
+              gh api --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                --raw-field name="$VERSION" \
+                --raw-field body="$(< "$notes")" \
+                -F draft=true
+            )"
           fi
+          release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
 
           # Clobber is legal only while the release is an unpublished draft. It
           # makes a failed upload retryable without ever rewriting a public asset.
           gh release upload "$VERSION" dist-release/* --clobber
 
           release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
           )"
           if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
             echo "$VERSION became public before its assets were verified" >&2
             exit 1
           fi
-          release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
           assets_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100"
           )"
@@ -465,7 +471,12 @@ jobs:
             exit 1
           fi
 
-          gh release edit "$VERSION" --draft=false --latest
+          # Publishing by numeric ID works for drafts; the by-tag endpoint does
+          # not expose them until after this transition.
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            --raw-field make_latest=true >/dev/null
 
       - name: Tell the release mirror to refresh
         env:
