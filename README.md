@@ -14,8 +14,11 @@ Both workflows are manual-only. They can be started from the Actions page or
 with GitHub CLI after the source revision has been pushed:
 
 ```sh
-# Deploy the current private deploy branch.
+# Deploy the private repository's pushed HEAD.
 npm --prefix ../aalookup run app:deploy
+
+# Or deploy any pushed private commit by its full SHA.
+npm --prefix ../aalookup run app:deploy -- <40-character-source-sha>
 
 # Publish a tagged private source revision as a public release.
 version=v0.4.0
@@ -27,7 +30,9 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
 
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
 The latter identifies the public workflow revision, not the application being
-built.
+built. Deployment selection never depends on the private `deploy` branch. The
+workflow checks out its SSH deployment helper from this repository, so an
+older source revision does not need to contain current Actions tooling.
 
 ## Repository configuration
 

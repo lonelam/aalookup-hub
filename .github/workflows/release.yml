@@ -169,11 +169,6 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: "./src-tauri -> target"
-
       - name: Install frontend dependencies
         run: npm ci
 
@@ -253,11 +248,6 @@ jobs:
         with:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: "./src-tauri -> target"
 
       - name: Install frontend dependencies
         run: npm ci
