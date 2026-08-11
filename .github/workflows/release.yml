@@ -299,6 +299,7 @@ jobs:
             codesign --verify --deep --strict --verbose=2 "$app"
             app_details="$(codesign -dvvv "$app" 2>&1)"
             echo "$app_details"
+            grep -Fq 'Identifier=com.aalookup.app' <<< "$app_details"
             grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$app_details"
             grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$app_details"
             grep -Eq '^CodeDirectory .*flags=.*runtime' <<< "$app_details"
@@ -337,6 +338,53 @@ jobs:
           verify_release aarch64-apple-darwin aarch64
           verify_release x86_64-apple-darwin x86_64
           verify_release universal-apple-darwin universal
+
+          updater_archive="dist-release/AALookup-macos-universal.app.tar.gz"
+          updater_signature="${updater_archive}.sig"
+          test -s "$updater_archive" || {
+            echo "Missing or empty universal macOS updater archive: $updater_archive" >&2
+            exit 1
+          }
+          test -s "$updater_signature" || {
+            echo "Missing or empty universal macOS updater signature: $updater_signature" >&2
+            exit 1
+          }
+          archive_manifest="$(tar -tzf "$updater_archive")"
+          if [[ -z "$archive_manifest" ]] || \
+            grep -Evq '^AALookup\.app(/|$)' <<< "$archive_manifest" || \
+            ! grep -Fxq 'AALookup.app/Contents/MacOS/aalookup' <<< "$archive_manifest"; then
+            echo "Universal macOS updater archive does not contain only the expected AALookup.app bundle" >&2
+            printf '%s\n' "$archive_manifest" >&2
+            exit 1
+          fi
+          grep -q '[^[:space:]]' "$updater_signature" || {
+            echo "Universal macOS updater signature contains only whitespace" >&2
+            exit 1
+          }
+
+          updater_extract="$(mktemp -d "$RUNNER_TEMP/aalookup-updater.XXXXXX")"
+          tar -xzf "$updater_archive" -C "$updater_extract"
+          updater_app="$updater_extract/AALookup.app"
+          updater_binary="$updater_app/Contents/MacOS/aalookup"
+          test -x "$updater_binary"
+          lipo "$updater_binary" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict --verbose=2 "$updater_app"
+          updater_details="$(codesign -dvvv "$updater_app" 2>&1)"
+          echo "$updater_details"
+          grep -Fq 'Identifier=com.aalookup.app' <<< "$updater_details"
+          grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$updater_details"
+          grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$updater_details"
+          grep -Eq '^CodeDirectory .*flags=.*runtime' <<< "$updater_details"
+          grep -Fq 'Timestamp=' <<< "$updater_details"
+          xcrun stapler validate "$updater_app"
+          if ! updater_assessment="$(
+            spctl --assess --type execute --verbose=4 "$updater_app" 2>&1
+          )"; then
+            echo "$updater_assessment" >&2
+            exit 1
+          fi
+          echo "$updater_assessment"
+          grep -Fq 'source=Notarized Developer ID' <<< "$updater_assessment"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -439,6 +487,8 @@ jobs:
             AALookup-macos-aarch64.dmg
             AALookup-macos-aarch64.zip
             AALookup-macos-universal.dmg
+            AALookup-macos-universal.app.tar.gz
+            AALookup-macos-universal.app.tar.gz.sig
             AALookup-macos-universal.zip
             AALookup-macos-x86_64.dmg
             AALookup-macos-x86_64.zip
@@ -482,6 +532,10 @@ jobs:
           2. Grant **Accessibility** and, if you enable OCR, **Screen Recording**.
 
           The macOS application is signed with an Apple Developer ID and notarized by Apple.
+          AALookup now checks for macOS updates and can install later releases from inside the
+          app. The first updater-enabled release still requires one manual \`.dmg\` installation;
+          after that one-time rollout, later updates can be installed in AALookup. The
+          \`.app.tar.gz\` and \`.sig\` files are updater assets; there is no need to download them.
 
           Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`.
           Public workflow commit: \`${PUBLIC_WORKFLOW_SHA}\`.
