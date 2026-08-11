@@ -153,8 +153,11 @@ jobs:
     name: macOS (arm64 + x64 + universal)
     needs: resolve
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 300
     permissions: {}
+    env:
+      APPLE_SIGNING_IDENTITY: "Developer ID Application: Zenan Lai (5CP5A63Q2H)"
+      APPLE_TEAM_ID: "5CP5A63Q2H"
 
     steps:
       - name: Checkout exact private source
@@ -181,19 +184,45 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Import Apple signing certificate (optional)
+      - name: Import Apple Developer ID certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: |
           set -euo pipefail
-          if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
-            echo "No APPLE_CERTIFICATE secret; DMG will be ad-hoc signed (Open Anyway)."
-            exit 0
+          umask 077
+          test -n "${APPLE_CERTIFICATE:-}" || {
+            echo "APPLE_CERTIFICATE is required for macOS releases" >&2
+            exit 1
+          }
+          test -n "${APPLE_CERTIFICATE_PASSWORD:-}" || {
+            echo "APPLE_CERTIFICATE_PASSWORD is required for macOS releases" >&2
+            exit 1
+          }
+          test -n "${APPLE_SIGNING_IDENTITY:-}" || {
+            echo "APPLE_SIGNING_IDENTITY is required for macOS releases" >&2
+            exit 1
+          }
+          test -n "${APPLE_ID:-}" || {
+            echo "APPLE_ID is required for macOS notarization" >&2
+            exit 1
+          }
+          test -n "${APPLE_PASSWORD:-}" || {
+            echo "APPLE_PASSWORD must contain an Apple app-specific password" >&2
+            exit 1
+          }
+          test -n "${APPLE_TEAM_ID:-}" || {
+            echo "APPLE_TEAM_ID is required for macOS notarization" >&2
+            exit 1
+          }
+          if [[ "$APPLE_SIGNING_IDENTITY" != Developer\ ID\ Application:* ]]; then
+            echo "APPLE_SIGNING_IDENTITY must be a Developer ID Application identity" >&2
+            exit 1
           fi
-          if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-            echo "APPLE_SIGNING_IDENTITY is required when APPLE_CERTIFICATE is set" >&2
+          if [[ "$APPLE_SIGNING_IDENTITY" != *"($APPLE_TEAM_ID)" ]]; then
+            echo "APPLE_SIGNING_IDENTITY does not match APPLE_TEAM_ID" >&2
             exit 1
           fi
 
@@ -201,25 +230,116 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/aalookup.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
 
-          echo -n "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$APPLE_CERTIFICATE" | tr -d '[:space:]' |
+            openssl base64 -d -A -out "$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "${APPLE_CERTIFICATE_PASSWORD:-}" \
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-
-          echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          identities="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
+          echo "$identities"
+          if ! grep -Fq "\"$APPLE_SIGNING_IDENTITY\"" <<< "$identities"; then
+            echo "Imported certificate does not provide $APPLE_SIGNING_IDENTITY" >&2
+            exit 1
+          fi
 
       - name: Build and collect arm64, x86_64, and universal artifacts
         env:
           AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bash scripts/release-macos.sh
+
+      - name: Notarize and staple disk images
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          notarize_dmg() {
+            local label="$1"
+            local dmg="dist-release/AALookup-macos-${label}.dmg"
+
+            test -f "$dmg"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$dmg"
+          }
+
+          notarize_dmg aarch64
+          notarize_dmg x86_64
+          notarize_dmg universal
+
+      - name: Verify Apple signatures and notarization
+        run: |
+          set -euo pipefail
+
+          verify_release() {
+            local triple="$1"
+            local label="$2"
+            local app="target/${triple}/release/bundle/macos/AALookup.app"
+            local dmg="dist-release/AALookup-macos-${label}.dmg"
+            local zip="dist-release/AALookup-macos-${label}.zip"
+            local app_details
+            local app_assessment
+            local dmg_details
+            local dmg_assessment
+
+            test -d "$app"
+            test -f "$dmg"
+            test -f "$zip"
+
+            codesign --verify --deep --strict --verbose=2 "$app"
+            app_details="$(codesign -dvvv "$app" 2>&1)"
+            echo "$app_details"
+            grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$app_details"
+            grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$app_details"
+            grep -Eq '^CodeDirectory .*flags=.*runtime' <<< "$app_details"
+            grep -Fq 'Timestamp=' <<< "$app_details"
+
+            xcrun stapler validate "$app"
+            if ! app_assessment="$(
+              spctl --assess --type execute --verbose=4 "$app" 2>&1
+            )"; then
+              echo "$app_assessment" >&2
+              exit 1
+            fi
+            echo "$app_assessment"
+            grep -Fq 'source=Notarized Developer ID' <<< "$app_assessment"
+
+            codesign --verify --strict --verbose=2 "$dmg"
+            dmg_details="$(codesign -dvvv "$dmg" 2>&1)"
+            echo "$dmg_details"
+            grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$dmg_details"
+            grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$dmg_details"
+            grep -Fq 'Timestamp=' <<< "$dmg_details"
+            xcrun stapler validate "$dmg"
+            if ! dmg_assessment="$(
+              spctl --assess --type open --context context:primary-signature \
+                --verbose=4 "$dmg" 2>&1
+            )"; then
+              echo "$dmg_assessment" >&2
+              exit 1
+            fi
+            echo "$dmg_assessment"
+            grep -Fq 'source=Notarized Developer ID' <<< "$dmg_assessment"
+
+            unzip -tq "$zip"
+          }
+
+          verify_release aarch64-apple-darwin aarch64
+          verify_release x86_64-apple-darwin x86_64
+          verify_release universal-apple-darwin universal
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -228,6 +348,12 @@ jobs:
           path: dist-release/*
           if-no-files-found: error
           retention-days: 3
+
+      - name: Remove Apple signing credentials
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/aalookup.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/aalookup-cert.p12"
 
   windows:
     name: Windows (x64)
@@ -354,15 +480,9 @@ jobs:
           | \`AALookup-macos-x86_64.dmg\` | Intel |
 
           1. Open the \`.dmg\`, then drag **AALookup** to Applications.
-          2. If first launch is blocked, right-click the app and choose **Open**, or use
-             **System Settings -> Privacy & Security -> Open Anyway**.
-          3. Grant **Accessibility** and, if you enable OCR, **Screen Recording**.
+          2. Grant **Accessibility** and, if you enable OCR, **Screen Recording**.
 
-          If macOS still says the app is damaged, clear the download quarantine:
-
-          \`\`\`bash
-          xattr -dr com.apple.quarantine /Applications/AALookup.app
-          \`\`\`
+          The macOS application is signed with an Apple Developer ID and notarized by Apple.
 
           Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`.
           Public workflow commit: \`${PUBLIC_WORKFLOW_SHA}\`.
