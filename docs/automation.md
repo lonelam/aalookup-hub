@@ -54,9 +54,9 @@ Create these repository secrets for release builds:
 - `AALOOKUP_CLIENT_TOKEN`
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (optional for a passwordless key)
-- `APPLE_CERTIFICATE` (base64-encoded password-protected `.p12` containing the
-  Developer ID Application certificate and private key)
-- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_CERTIFICATE` (base64-encoded `.p12` containing the Developer ID
+  Application certificate and private key)
+- `APPLE_CERTIFICATE_PASSWORD` (empty when the `.p12` is passwordless)
 - `APPLE_ID` (Apple account email used for notarization)
 - `APPLE_PASSWORD` (an Apple app-specific password, never the account password)
 - `AALOOKUP_RELEASE_REFRESH_TOKEN` (optional)
@@ -65,20 +65,20 @@ The workflow pins `APPLE_SIGNING_IDENTITY` to
 `Developer ID Application: Zenan Lai (5CP5A63Q2H)` and `APPLE_TEAM_ID` to
 `5CP5A63Q2H`; these identifiers are public signing metadata rather than secrets.
 
-Export the Developer ID certificate and its private key together as a
-password-protected `.p12`, then encode it without line wrapping before setting
-`APPLE_CERTIFICATE`:
+Export the Developer ID certificate and its private key together as a `.p12`,
+then encode it without line wrapping before setting `APPLE_CERTIFICATE`:
 
 ```sh
 openssl base64 -A -in DeveloperIDApplication.p12 -out certificate-base64.txt
 gh secret set APPLE_CERTIFICATE --repo lonelam/aalookup-hub < certificate-base64.txt
 ```
 
-The macOS job fails before building when any Apple signing or notarization
-credential is missing. Tauri signs and notarizes each app, then the workflow
-notarizes each final DMG. It checks the Developer ID authority, Team ID,
-hardened runtime, secure timestamps, stapled tickets, Gatekeeper assessments,
-DMG signatures, and ZIP integrity before uploading any macOS artifact.
+The macOS job accepts a passwordless `.p12`, but fails before building when the
+certificate, Apple ID, or app-specific notarization password is missing. Tauri
+signs and notarizes each app, then the workflow notarizes each final DMG. It
+checks the Developer ID authority, Team ID, hardened runtime, secure timestamps,
+stapled tickets, Gatekeeper assessments, DMG signatures, and ZIP integrity
+before uploading any macOS artifact.
 
 The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It
 defaults to `https://aalookup.laizn.cc`.

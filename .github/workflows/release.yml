@@ -198,10 +198,6 @@ jobs:
             echo "APPLE_CERTIFICATE is required for macOS releases" >&2
             exit 1
           }
-          test -n "${APPLE_CERTIFICATE_PASSWORD:-}" || {
-            echo "APPLE_CERTIFICATE_PASSWORD is required for macOS releases" >&2
-            exit 1
-          }
           test -n "${APPLE_SIGNING_IDENTITY:-}" || {
             echo "APPLE_SIGNING_IDENTITY is required for macOS releases" >&2
             exit 1
