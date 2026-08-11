@@ -24,6 +24,12 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f version="$version" \
   -f source_sha="$source_sha"
 
+# Build, sign, notarize, and verify macOS artifacts without publishing them.
+gh workflow run release.yml --repo lonelam/aalookup-hub \
+  -f operation=verify \
+  -f version="$version" \
+  -f source_sha="$source_sha"
+
 # Refresh an already-published version without rebuilding it.
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f operation=refresh \

@@ -1,17 +1,18 @@
 name: Release
 
-run-name: ${{ inputs.operation == 'refresh' && format('Refresh mirror for {0}', inputs.version) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
+run-name: ${{ inputs.operation == 'refresh' && format('Refresh mirror for {0}', inputs.version) || inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
 
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Build a release or only refresh the production release mirror
+        description: Release, verify macOS signing without publishing, or refresh the mirror
         required: true
         default: release
         type: choice
         options:
           - release
+          - verify
           - refresh
       source_sha:
         description: Exact lowercase commit SHA from lonelam/aalookup
@@ -31,7 +32,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve private source
-    if: ${{ inputs.operation == 'release' }}
+    if: ${{ inputs.operation != 'refresh' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {}
@@ -358,6 +359,7 @@ jobs:
   windows:
     name: Windows (x64)
     needs: resolve
+    if: ${{ inputs.operation == 'release' }}
     runs-on: windows-2022
     timeout-minutes: 60
     permissions: {}
@@ -409,6 +411,7 @@ jobs:
       - resolve
       - macos
       - windows
+    if: ${{ inputs.operation == 'release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
