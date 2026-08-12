@@ -672,7 +672,7 @@ jobs:
       - name: Tell the release mirror to refresh
         env:
           REFRESH_TOKEN: ${{ secrets.AALOOKUP_RELEASE_REFRESH_TOKEN }}
-          ORIGIN: ${{ vars.AALOOKUP_UPDATE_ORIGIN || 'https://aalookup.laizn.cc' }}
+          ORIGIN: ${{ vars.AALOOKUP_UPDATE_ORIGIN || 'https://aalookup.com' }}
           OPERATION: ${{ inputs.operation }}
           VERSION: ${{ inputs.version }}
         run: |
@@ -706,3 +706,4 @@ jobs:
             exit 1
           fi
           echo "::warning::Could not reach the release mirror; it will refresh on its own schedule."
+

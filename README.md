@@ -6,11 +6,11 @@ AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把�
 生词上，通过触控板手势或快捷键唤起面板，它会在原文旁给出贴合当前句子的
 解释，让阅读保持连贯。
 
-[产品主页](https://aalookup.laizn.cc) ·
-[下载最新版](https://aalookup.laizn.cc/#download) ·
-[在线学习](https://aalookup.laizn.cc/learn)
+[产品主页](https://aalookup.com) ·
+[下载最新版](https://aalookup.com/#download) ·
+[在线学习](https://aalookup.com/learn)
 
-![AALookup 在论文原文旁解释当前语境中的单词](https://aalookup.laizn.cc/hero/paper-1600.webp)
+![AALookup 在论文原文旁解释当前语境中的单词](https://aalookup.com/hero/paper-1600.webp)
 
 ## 阅读时，它这样工作
 
@@ -43,7 +43,7 @@ AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把�
 | Windows | Windows 10/11 | x86_64 NSIS 安装程序 |
 
 前往 [Releases](https://github.com/lonelam/aalookup-hub/releases) 查看公开版本，
-或在 [产品主页](https://aalookup.laizn.cc/#download) 获取适合当前设备的安装包。
+或在 [产品主页](https://aalookup.com/#download) 获取适合当前设备的安装包。
 
 ## 关于这个仓库
 
@@ -51,3 +51,4 @@ AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把�
 自动化。应用源代码不在本仓库公开。
 
 维护者可参阅 [Actions 与仓库配置](docs/automation.md)。
+

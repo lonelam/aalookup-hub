@@ -81,7 +81,7 @@ stapled tickets, Gatekeeper assessments, DMG signatures, and ZIP integrity
 before uploading any macOS artifact.
 
 The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It
-defaults to `https://aalookup.laizn.cc`.
+defaults to `https://aalookup.com`.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
 workflow token to request write access. Only the final Release job requests
@@ -110,3 +110,4 @@ Repository and environment secrets are available to anyone who can replace a
 trusted workflow with code that exports them. Keep write access narrow, protect
 the default branch, require review for `.github/workflows/**`, and add required
 reviewers to the `production` environment.
+
