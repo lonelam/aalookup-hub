@@ -10,7 +10,7 @@ AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把�
 [下载最新版](https://aalookup.com/#download) ·
 [在线学习](https://aalookup.com/learn)
 
-![AALookup OCR查游戏语境]([https://aalookup.com/hero/paper-1600.webp](https://aalookup.com/hero/game-1600.webp))
+![AALookup OCR查游戏语境](https://aalookup.com/hero/game-1600.webp)
 
 ## 阅读时，它这样工作
 
