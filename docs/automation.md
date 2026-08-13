@@ -34,6 +34,16 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f operation=refresh \
   -f version="$version"
+
+# Build and publish a GitHub-only prerelease from any pushed private commit.
+source_sha="$(git -C ../aalookup rev-parse HEAD)"
+gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
+  -f source_sha="$source_sha"
+
+# Or choose an explicit prerelease label whose base matches the source version.
+gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
+  -f source_sha="$source_sha" \
+  -f version=v0.3.30-rc.1
 ```
 
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
@@ -41,6 +51,13 @@ The latter identifies the public workflow revision, not the application being
 built. Deployment selection never depends on the private `deploy` branch. The
 workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
+
+`pre-release.yml` accepts an exact source SHA without requiring a private source
+tag. If `version` is omitted, it derives `v<source-base-version>-pre.<12-character-sha>`.
+The resulting GitHub release is marked as a prerelease and is deliberately not
+marked latest or sent to the production release mirror, so it is not offered by
+the website or desktop updater. Preview installers must be downloaded and
+installed manually.
 
 ## Repository secrets
 
@@ -84,7 +101,7 @@ The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It
 defaults to `https://aalookup.com`.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
-workflow token to request write access. Only the final Release job requests
+workflow token to request write access. Only the final publish jobs request
 `contents: write`; build and source-resolution jobs explicitly receive no
 repository permissions.
 

@@ -1,0 +1,457 @@
+name: Pre-release
+
+run-name: Preview ${{ inputs.version || 'auto' }} from ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact lowercase commit SHA from lonelam/aalookup
+        required: true
+        type: string
+      version:
+        description: Optional prerelease tag (for example, v0.3.30-rc.1); omitted derives one from the SHA
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: pre-release-${{ inputs.version || inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve private source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      version: ${{ steps.source.outputs.version }}
+      source_version: ${{ steps.source.outputs.source_version }}
+
+    steps:
+      - name: Validate source SHA and optional version
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const sha = process.env.SOURCE_SHA;
+          const version = process.env.VERSION;
+          if (!/^[0-9a-f]{40}$/.test(sha)) {
+            throw new Error("source_sha must be exactly 40 lowercase hexadecimal characters");
+          }
+          if (version && !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*$/.test(version)) {
+            throw new Error("version must be v-prefixed SemVer with a prerelease identifier");
+          }
+          NODE
+
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source identity and resolve preview version
+        id: source
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git rev-parse HEAD)"
+          if [[ "$resolved_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Resolved source $resolved_sha does not match requested source $EXPECTED_SHA" >&2
+            exit 1
+          fi
+
+          package_version="$(jq --exit-status --raw-output '.version | select(type == "string")' package.json)"
+          tauri_version="$(jq --exit-status --raw-output '.version | select(type == "string")' src-tauri/tauri.conf.json)"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)"
+          test -n "$cargo_version" || {
+            echo "Could not read the package version from src-tauri/Cargo.toml" >&2
+            exit 1
+          }
+          if [[ "$tauri_version" != "$package_version" || "$cargo_version" != "$package_version" ]]; then
+            echo "package.json, src-tauri/tauri.conf.json, and src-tauri/Cargo.toml must carry one version" >&2
+            printf 'package.json: %s\nsrc-tauri/tauri.conf.json: %s\nsrc-tauri/Cargo.toml: %s\n' \
+              "$package_version" "$tauri_version" "$cargo_version" >&2
+            exit 1
+          fi
+
+          source_base="${package_version%%-*}"
+          if [[ "$package_version" == *+* ]]; then
+            echo "source package version must not contain SemVer build metadata" >&2
+            exit 1
+          fi
+          SOURCE_VERSION="$package_version" node <<'NODE'
+          const version = process.env.SOURCE_VERSION;
+          if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9]\d*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/.test(version)) {
+            throw new Error(`source package version is not valid SemVer: ${version}`);
+          }
+          NODE
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            version_base="${REQUESTED_VERSION#v}"
+            version_base="${version_base%%-*}"
+            if [[ "$version_base" != "$source_base" ]]; then
+              echo "$REQUESTED_VERSION base version does not match source version $source_base" >&2
+              exit 1
+            fi
+            version="$REQUESTED_VERSION"
+          else
+            version="v${source_base}-pre.${resolved_sha:0:12}"
+          fi
+          {
+            echo "source_sha=$resolved_sha"
+            echo "version=$version"
+            echo "source_version=$package_version"
+          } >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS (arm64 + x64 + universal)
+    needs: resolve
+    runs-on: macos-14
+    timeout-minutes: 300
+    permissions: {}
+    env:
+      APPLE_SIGNING_IDENTITY: "Developer ID Application: Zenan Lai (5CP5A63Q2H)"
+      APPLE_TEAM_ID: "5CP5A63Q2H"
+
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Import Apple Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "${APPLE_CERTIFICATE:-}" || {
+            echo "APPLE_CERTIFICATE is required for prereleases" >&2
+            exit 1
+          }
+          test -n "${APPLE_SIGNING_IDENTITY:-}" || {
+            echo "APPLE_SIGNING_IDENTITY is required for prereleases" >&2
+            exit 1
+          }
+          test -n "${APPLE_ID:-}" || {
+            echo "APPLE_ID is required for prereleases" >&2
+            exit 1
+          }
+          test -n "${APPLE_PASSWORD:-}" || {
+            echo "APPLE_PASSWORD is required for prereleases" >&2
+            exit 1
+          }
+          test -n "${APPLE_TEAM_ID:-}" || {
+            echo "APPLE_TEAM_ID is required for prereleases" >&2
+            exit 1
+          }
+          [[ "$APPLE_SIGNING_IDENTITY" == Developer\ ID\ Application:* ]] || {
+            echo "APPLE_SIGNING_IDENTITY must be a Developer ID Application identity" >&2
+            exit 1
+          }
+          [[ "$APPLE_SIGNING_IDENTITY" == *"($APPLE_TEAM_ID)" ]] || {
+            echo "APPLE_SIGNING_IDENTITY does not match APPLE_TEAM_ID" >&2
+            exit 1
+          }
+          cert_path="$RUNNER_TEMP/aalookup-cert.p12"
+          keychain_path="$RUNNER_TEMP/aalookup.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          printf '%s' "$APPLE_CERTIFICATE" | tr -d '[:space:]' | openssl base64 -d -A -out "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          identities="$(security find-identity -v -p codesigning "$keychain_path")"
+          echo "$identities"
+          grep -Fq "\"$APPLE_SIGNING_IDENTITY\"" <<< "$identities" || {
+            echo "Imported certificate does not provide $APPLE_SIGNING_IDENTITY" >&2
+            exit 1
+          }
+
+      - name: Build and collect macOS artifacts
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash scripts/release-macos.sh
+
+      - name: Notarize disk images
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for label in aarch64 x86_64 universal; do
+            dmg="dist-release/AALookup-macos-${label}.dmg"
+            xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$dmg"
+          done
+
+      - name: Verify signatures, notarization, and updater archive
+        run: |
+          set -euo pipefail
+          for pair in "aarch64-apple-darwin aarch64" "x86_64-apple-darwin x86_64" "universal-apple-darwin universal"; do
+            read -r triple label <<< "$pair"
+            app="target/${triple}/release/bundle/macos/AALookup.app"
+            dmg="dist-release/AALookup-macos-${label}.dmg"
+            zip="dist-release/AALookup-macos-${label}.zip"
+            test -d "$app" && test -f "$dmg" && test -f "$zip"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            app_details="$(codesign -dvvv "$app" 2>&1)"
+            grep -Fq 'Identifier=com.aalookup.app' <<< "$app_details"
+            grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$app_details"
+            grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$app_details"
+            grep -Eq '^CodeDirectory .*flags=.*runtime' <<< "$app_details"
+            grep -Fq 'Timestamp=' <<< "$app_details"
+            xcrun stapler validate "$app"
+            if ! app_assessment="$(spctl --assess --type execute --verbose=4 "$app" 2>&1)"; then
+              echo "$app_assessment" >&2
+              exit 1
+            fi
+            echo "$app_assessment"
+            grep -Fq 'source=Notarized Developer ID' <<< "$app_assessment"
+            codesign --verify --strict --verbose=2 "$dmg"
+            dmg_details="$(codesign -dvvv "$dmg" 2>&1)"
+            grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$dmg_details"
+            grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$dmg_details"
+            grep -Fq 'Timestamp=' <<< "$dmg_details"
+            xcrun stapler validate "$dmg"
+            if ! dmg_assessment="$(spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" 2>&1)"; then
+              echo "$dmg_assessment" >&2
+              exit 1
+            fi
+            echo "$dmg_assessment"
+            grep -Fq 'source=Notarized Developer ID' <<< "$dmg_assessment"
+            unzip -tq "$zip"
+          done
+          updater="dist-release/AALookup-macos-universal.app.tar.gz"
+          signature="${updater}.sig"
+          test -s "$updater" && test -s "$signature"
+          grep -q '[^[:space:]]' "$signature"
+          manifest="$(tar -tzf "$updater")"
+          if [[ -z "$manifest" ]] || grep -Eqv '^AALookup\.app(/|$)' <<< "$manifest" || \
+            ! grep -Fxq 'AALookup.app/Contents/MacOS/aalookup' <<< "$manifest"; then
+            echo "Unexpected updater archive contents" >&2
+            printf '%s\n' "$manifest" >&2
+            exit 1
+          fi
+          updater_extract="$(mktemp -d "$RUNNER_TEMP/aalookup-updater.XXXXXX")"
+          tar -xzf "$updater" -C "$updater_extract"
+          updater_app="$updater_extract/AALookup.app"
+          updater_binary="$updater_app/Contents/MacOS/aalookup"
+          test -x "$updater_binary"
+          lipo "$updater_binary" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict --verbose=2 "$updater_app"
+          updater_details="$(codesign -dvvv "$updater_app" 2>&1)"
+          grep -Fq 'Identifier=com.aalookup.app' <<< "$updater_details"
+          grep -Fq "Authority=$APPLE_SIGNING_IDENTITY" <<< "$updater_details"
+          grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$updater_details"
+          grep -Eq '^CodeDirectory .*flags=.*runtime' <<< "$updater_details"
+          grep -Fq 'Timestamp=' <<< "$updater_details"
+          xcrun stapler validate "$updater_app"
+          if ! updater_assessment="$(spctl --assess --type execute --verbose=4 "$updater_app" 2>&1)"; then
+            echo "$updater_assessment" >&2
+            exit 1
+          fi
+          echo "$updater_assessment"
+          grep -Fq 'source=Notarized Developer ID' <<< "$updater_assessment"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aalookup-macos-pre-release
+          path: dist-release/*
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Remove Apple signing credentials
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/aalookup-keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/aalookup-cert.p12"
+
+  windows:
+    name: Windows (x64)
+    needs: resolve
+    runs-on: windows-2022
+    timeout-minutes: 60
+    permissions: {}
+
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and collect Windows artifacts
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: pwsh
+        run: "& \"$PWD/scripts/release-windows.ps1\""
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aalookup-windows-pre-release
+          path: dist-release/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish GitHub prerelease
+    needs: [resolve, macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aalookup-macos-pre-release
+          path: dist-release
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aalookup-windows-pre-release
+          path: dist-release
+
+      - name: Stage and publish immutable GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SOURCE_VERSION: ${{ needs.resolve.outputs.source_version }}
+          PRIVATE_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          PUBLIC_WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          expected=(
+            AALookup-macos-aarch64.dmg
+            AALookup-macos-aarch64.zip
+            AALookup-macos-universal.dmg
+            AALookup-macos-universal.app.tar.gz
+            AALookup-macos-universal.app.tar.gz.sig
+            AALookup-macos-universal.zip
+            AALookup-macos-x86_64.dmg
+            AALookup-macos-x86_64.zip
+            AALookup-windows-x86_64-setup.exe
+            AALookup-windows-x86_64-setup.exe.sig
+          )
+          for asset in "${expected[@]}"; do test -s "dist-release/$asset" || { echo "Missing release asset $asset" >&2; exit 1; }; done
+          [[ "$(find dist-release -maxdepth 1 -type f | wc -l | tr -d ' ')" == "${#expected[@]}" ]] || { echo "Unexpected files found in dist-release" >&2; exit 1; }
+
+          notes="$RUNNER_TEMP/pre-release-notes.md"
+          cat > "$notes" <<EOF
+          ## AALookup preview
+
+          This is an opt-in prerelease for testing. It is not shown on the product
+          download page and is not offered by the desktop updater. Install it manually
+          from the assets below; do not use it for production data.
+
+          GitHub preview tag: \`${VERSION}\`. Embedded application version: \`${SOURCE_VERSION}\`.
+
+          Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`.
+          Public workflow commit: \`${PUBLIC_WORKFLOW_SHA}\`.
+          EOF
+
+          release_matches="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq --slurp --arg version "$VERSION" '[.[][] | select(.tag_name == $version)]')"
+          release_count="$(jq --exit-status 'length' <<< "$release_matches")"
+          (( release_count <= 1 )) || { echo "Multiple releases unexpectedly use tag $VERSION" >&2; exit 1; }
+          release_json=""
+          if (( release_count == 1 )); then
+            release_json="$(jq --exit-status '.[0]' <<< "$release_matches")"
+            [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" == true ]] || { echo "$VERSION is already published and cannot be replaced" >&2; exit 1; }
+            [[ "$(jq --exit-status --raw-output '.prerelease' <<< "$release_json")" == true ]] || { echo "$VERSION draft is not marked as a prerelease" >&2; exit 1; }
+            marker="Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`."
+            [[ "$(jq --exit-status --raw-output '.body // ""' <<< "$release_json")" == *"$marker"* ]] || { echo "Existing draft belongs to a different private source" >&2; exit 1; }
+          fi
+
+          tag_json=""
+          tag_status=0
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" 2>/dev/null)" || tag_status=$?
+          if (( tag_status == 0 )); then
+            [[ "$(jq --exit-status --raw-output '.object.type' <<< "$tag_json")" == commit ]] || { echo "Existing tag is not a commit" >&2; exit 1; }
+            [[ "$(jq --exit-status --raw-output '.object.sha' <<< "$tag_json")" == "$PUBLIC_WORKFLOW_SHA" ]] || { echo "Existing tag is not owned by this workflow" >&2; exit 1; }
+          else
+            [[ "$(jq --raw-output '.status // empty' <<< "$tag_json" 2>/dev/null || true)" == 404 ]] || { echo "Could not inspect public tag $VERSION" >&2; exit "$tag_status"; }
+            [[ -z "$release_json" ]] || { echo "Draft release lost its public tag" >&2; exit 1; }
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${VERSION}" -f sha="$PUBLIC_WORKFLOW_SHA" >/dev/null
+          fi
+
+          if [[ -z "$release_json" ]]; then
+            release_json="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --raw-field tag_name="$VERSION" --raw-field target_commitish="$PUBLIC_WORKFLOW_SHA" --raw-field name="$VERSION" --raw-field body="$(< "$notes")" -F draft=true -F prerelease=true)"
+          else
+            release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
+            release_json="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --raw-field name="$VERSION" --raw-field body="$(< "$notes")" -F draft=true -F prerelease=true)"
+          fi
+          release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
+          gh release upload "$VERSION" dist-release/* --clobber
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+          [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" == true ]] || { echo "Release became public before verification" >&2; exit 1; }
+          [[ "$(jq --exit-status --raw-output '.prerelease' <<< "$release_json")" == true ]] || { echo "Release lost prerelease flag" >&2; exit 1; }
+          assets_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100")"
+          actual_manifest="$(jq --exit-status --raw-output 'if all(.[]; .size > 0) then sort_by(.name) | .[].name else error("release contains an empty asset") end' <<< "$assets_json")"
+          expected_manifest="$(printf '%s\n' "${expected[@]}" | sort)"
+          [[ "$actual_manifest" == "$expected_manifest" ]] || { echo "Prerelease assets do not match expected manifest" >&2; exit 1; }
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -F draft=false -F prerelease=true --raw-field make_latest=false >/dev/null
