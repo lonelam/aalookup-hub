@@ -355,9 +355,74 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  android:
+    name: Android (arm64 APK)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions: {}
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Write signing keystore
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "$ANDROID_KEYSTORE" ]] || { echo "ANDROID_KEYSTORE is required for prereleases" >&2; exit 1; }
+          [[ -n "$ANDROID_KEYSTORE_PASSWORD" ]] || { echo "ANDROID_KEYSTORE_PASSWORD is required for prereleases" >&2; exit 1; }
+          printf '%s' "$ANDROID_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          cat > src-tauri/gen/android/keystore.properties <<PROPS
+          password=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=aalookup
+          storeFile=$RUNNER_TEMP/release.keystore
+          PROPS
+      - name: Build signed APK
+        run: |
+          set -euo pipefail
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          npx tauri android build --apk --target aarch64
+      - name: Stage and verify the release asset
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' -type f | head -n 1)"
+          [[ -n "$apk" ]] || { echo "No release APK produced" >&2; exit 1; }
+          cp "$apk" dist-release/AALookup-android-aarch64.apk
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          "$apksigner" verify --print-certs dist-release/AALookup-android-aarch64.apk | grep -q "CN=AALookup" || { echo "APK is not signed with the release key" >&2; exit 1; }
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aalookup-android-pre-release
+          path: dist-release
+          if-no-files-found: error
+          retention-days: 3
   publish:
     name: Publish GitHub prerelease
-    needs: [resolve, macos, windows]
+    needs: [resolve, macos, windows, android]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -374,6 +439,11 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: aalookup-windows-pre-release
+          path: dist-release
+      - name: Download Android artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aalookup-android-pre-release
           path: dist-release
 
       - name: Stage and publish immutable GitHub prerelease
@@ -397,6 +467,7 @@ jobs:
             AALookup-macos-x86_64.zip
             AALookup-windows-x86_64-setup.exe
             AALookup-windows-x86_64-setup.exe.sig
+            AALookup-android-aarch64.apk
           )
           for asset in "${expected[@]}"; do test -s "dist-release/$asset" || { echo "Missing release asset $asset" >&2; exit 1; }; done
           [[ "$(find dist-release -maxdepth 1 -type f | wc -l | tr -d ' ')" == "${#expected[@]}" ]] || { echo "Unexpected files found in dist-release" >&2; exit 1; }
@@ -407,7 +478,8 @@ jobs:
 
           This is an opt-in prerelease for testing. It is not shown on the product
           download page and is not offered by the desktop updater. Install it manually
-          from the assets below; do not use it for production data.
+          from the assets below; do not use it for production data. The Android
+          preview is the arm64 APK; iOS previews ship through TestFlight.
 
           GitHub preview tag: \`${VERSION}\`. Embedded application version: \`${SOURCE_VERSION}\`.
 
