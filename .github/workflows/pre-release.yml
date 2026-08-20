@@ -423,7 +423,11 @@ jobs:
   ios:
     name: iOS (IPA + TestFlight)
     needs: resolve
-    runs-on: macos-14
+    # macos-26's default Xcode (26.x) is required twice over: the committed
+    # Xcode project is objectVersion 77 (unreadable before Xcode 16.3, and
+    # macos-14 tops out at 16.2), and since 2026-04-28 App Store Connect
+    # rejects uploads not built with the iOS 26 SDK.
+    runs-on: macos-26
     timeout-minutes: 120
     permissions: {}
     steps:
