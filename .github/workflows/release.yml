@@ -479,7 +479,8 @@ jobs:
           retention-days: 3
 
   # The mobile apps are experimental and ship only as the assets attached
-  # here: no store listing, and the desktop updater never offers them.
+  # here: no store listing. Android's direct APK has the signed updater
+  # capability; the website still keeps the mobile entry hidden.
   android:
     name: Android (arm64 APK)
     needs: resolve
@@ -512,6 +513,7 @@ jobs:
         env:
           ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_SIGNING_CERT_SHA256: ${{ secrets.AALOOKUP_ANDROID_SIGNING_CERT_SHA256 }}
         run: |
           set -euo pipefail
           umask 077
@@ -523,22 +525,31 @@ jobs:
           keyAlias=aalookup
           storeFile=$RUNNER_TEMP/release.keystore
           PROPS
-      - name: Build signed APK
+          if [[ -z "$ANDROID_SIGNING_CERT_SHA256" ]]; then
+            ANDROID_SIGNING_CERT_SHA256="$(
+              keytool -list -v \
+                -keystore "$RUNNER_TEMP/release.keystore" \
+                -alias aalookup \
+                -storepass "$ANDROID_KEYSTORE_PASSWORD" |
+                awk -F': ' '/^[[:space:]]*SHA256:/{print $2; exit}'
+            )"
+          fi
+          [[ -n "$ANDROID_SIGNING_CERT_SHA256" ]] || {
+            echo "Could not determine the Android signing certificate digest" >&2
+            exit 1
+          }
+          printf 'AALOOKUP_ANDROID_SIGNING_CERT_SHA256=%s\n' "$ANDROID_SIGNING_CERT_SHA256" >> "$GITHUB_ENV"
+      - name: Build signed APK and updater artifacts
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          npx tauri android build --apk --target aarch64
-      - name: Stage and verify the release asset
-        run: |
-          set -euo pipefail
-          mkdir -p dist-release
-          apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' -type f | head -n 1)"
-          [[ -n "$apk" ]] || { echo "No release APK produced" >&2; exit 1; }
-          cp "$apk" dist-release/AALookup-android-aarch64.apk
-          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
-          "$apksigner" verify --print-certs dist-release/AALookup-android-aarch64.apk | grep -q "CN=AALookup" || { echo "APK is not signed with the release key" >&2; exit 1; }
+          bash scripts/release-android.sh
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -692,6 +703,7 @@ jobs:
             AALookup-windows-x86_64-setup.exe
             AALookup-windows-x86_64-setup.exe.sig
             AALookup-android-aarch64.apk
+            AALookup-android-aarch64.apk.sig
             AALookup-ios-arm64.ipa
           )
           for asset in "${expected[@]}"; do
@@ -748,10 +760,11 @@ jobs:
           ## Mobile (experimental)
 
           > **The Android and iOS apps are experimental and incomplete.** They are published
-          > here on GitHub only — they are not on Google Play or the App Store, they do not
-          > update themselves, and parts of the desktop app are missing or behave differently
-          > on a phone. Treat them as a preview, and keep anything you rely on backed up by a
-          > signed-in account.
+          > here on GitHub only — they are not on Google Play or the App Store, and parts of
+          > the desktop app are missing or behave differently on a phone. The Android APK
+          > checks signed releases and asks Android before installing; the iOS build remains
+          > TestFlight-only. Treat both as previews, and keep anything you rely on backed up
+          > by a signed-in account.
 
           | File | Platform |
           | --- | --- |
@@ -931,4 +944,3 @@ jobs:
             exit 1
           fi
           echo "::warning::Could not reach the release mirror; it will refresh on its own schedule."
-

@@ -56,8 +56,9 @@ older source revision does not need to contain current Actions tooling.
 tag. If `version` is omitted, it derives `v<source-base-version>-pre.<12-character-sha>`.
 The resulting GitHub release is marked as a prerelease and is deliberately not
 marked latest or sent to the production release mirror, so it is not offered by
-the website or desktop updater. Preview installers must be downloaded and
-installed manually.
+the website or desktop updater. The Android preview still contains the
+check-only updater path, but prerelease artifacts are not mirrored as a
+production update; preview installers must be downloaded and installed manually.
 
 ## Repository secrets
 
@@ -71,6 +72,10 @@ Create these repository secrets for release builds:
 - `AALOOKUP_CLIENT_TOKEN`
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (optional for a passwordless key)
+- `ANDROID_KEYSTORE` (base64-encoded Android upload/release keystore)
+- `ANDROID_KEYSTORE_PASSWORD`
+- `AALOOKUP_ANDROID_SIGNING_CERT_SHA256` (optional; the workflow derives the
+  SHA-256 certificate digest from `ANDROID_KEYSTORE` when omitted)
 - `APPLE_CERTIFICATE` (base64-encoded `.p12` containing the Developer ID
   Application certificate and private key)
 - `APPLE_CERTIFICATE_PASSWORD` (empty when the `.p12` is passwordless)
@@ -81,6 +86,15 @@ Create these repository secrets for release builds:
 The workflow pins `APPLE_SIGNING_IDENTITY` to
 `Developer ID Application: Zenan Lai (5CP5A63Q2H)` and `APPLE_TEAM_ID` to
 `5CP5A63Q2H`; these identifiers are public signing metadata rather than secrets.
+
+The Android release and prerelease jobs run the private source repository's
+`scripts/release-android.sh`. They build the arm64 direct-download APK with
+the official updater installer gate, sign the exact renamed APK with
+`TAURI_SIGNING_PRIVATE_KEY`, and publish its adjacent `.apk.sig`. The
+certificate digest is checked against the optional secret above (or the
+keystore-derived value), so an APK signed by a different key cannot enter the
+release asset set. The server's updater manifest consumes this signed APK
+additively while the website's human download manifest continues to hide it.
 
 Export the Developer ID certificate and its private key together as a `.p12`,
 then encode it without line wrapping before setting `APPLE_CERTIFICATE`:
@@ -127,4 +141,3 @@ Repository and environment secrets are available to anyone who can replace a
 trusted workflow with code that exports them. Keep write access narrow, protect
 the default branch, require review for `.github/workflows/**`, and add required
 reviewers to the `production` environment.
-
