@@ -304,7 +304,7 @@ jobs:
       - name: Remove Apple signing credentials
         if: ${{ always() }}
         run: |
-          security delete-keychain "$RUNNER_TEMP/aalookup-keychain-db" 2>/dev/null || true
+          security delete-keychain "$RUNNER_TEMP/aalookup.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/aalookup-cert.p12"
 
   windows:

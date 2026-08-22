@@ -70,12 +70,16 @@ does not persist it in the checked-out repository.
 Create these repository secrets for release builds:
 
 - `AALOOKUP_CLIENT_TOKEN`
+- `ASC_API_KEY` (raw App Store Connect API `.p8` private-key contents)
+- `ASC_API_KEY_ID`
+- `ASC_API_ISSUER_ID`
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (optional for a passwordless key)
 - `ANDROID_KEYSTORE` (base64-encoded Android upload/release keystore)
 - `ANDROID_KEYSTORE_PASSWORD`
 - `AALOOKUP_ANDROID_SIGNING_CERT_SHA256` (optional; the workflow derives the
-  SHA-256 certificate digest from `ANDROID_KEYSTORE` when omitted)
+  SHA-256 certificate digest from `ANDROID_KEYSTORE` when omitted; use the
+  lowercase 64-hex form without colons when setting it explicitly)
 - `APPLE_CERTIFICATE` (base64-encoded `.p12` containing the Developer ID
   Application certificate and private key)
 - `APPLE_CERTIFICATE_PASSWORD` (empty when the `.p12` is passwordless)
@@ -95,6 +99,11 @@ certificate digest is checked against the optional secret above (or the
 keystore-derived value), so an APK signed by a different key cannot enter the
 release asset set. The server's updater manifest consumes this signed APK
 additively while the website's human download manifest continues to hide it.
+
+The iOS release and prerelease jobs require the App Store Connect API key
+secrets above. `ASC_API_KEY` is the unencoded `.p8` contents; the key ID must
+match the `AuthKey_<ID>.p8` filename and the issuer ID must belong to the same
+App Store Connect team.
 
 Export the Developer ID certificate and its private key together as a `.p12`,
 then encode it without line wrapping before setting `APPLE_CERTIFICATE`:
@@ -127,6 +136,9 @@ Create a protected `production` environment with these secrets:
 - `DEPLOY_KNOWN_HOSTS`
 - `DEPLOY_HOST`
 - `DEPLOY_USER`
+
+`DEPLOY_SSH_PRIVATE_KEY` must be an unencrypted (passwordless) private key;
+the deployment helper intentionally rejects passphrase-protected keys.
 
 The environment must define `DEPLOY_URL` and may define `DEPLOY_PORT`, which
 defaults to `22`.
