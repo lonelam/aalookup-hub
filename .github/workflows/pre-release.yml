@@ -472,12 +472,28 @@ jobs:
           [[ -n "$ASC_API_KEY" && -n "$ASC_API_KEY_ID" && -n "$ASC_API_ISSUER_ID" ]] || { echo "ASC_API_KEY, ASC_API_KEY_ID and ASC_API_ISSUER_ID are required for prereleases" >&2; exit 1; }
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_API_KEY" > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
-      - name: Stamp a unique TestFlight build number
+      - name: Hand the Xcode phases the build number and the client token
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
         run: |
           set -euo pipefail
-          for plist in src-tauri/gen/apple/aalookup_iOS/Info.plist src-tauri/gen/apple/ShareExtension/Info.plist; do
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$plist"
-          done
+          test -n "$AALOOKUP_CLIENT_TOKEN" || {
+            echo "AALOOKUP_CLIENT_TOKEN is required for guest API access" >&2
+            exit 1
+          }
+          # Both values reach the build through this file for the same reason
+          # they do in release.yml: xcodebuild runs its phases under a build
+          # service that inherits nothing from this job, and the tauri CLI
+          # rewrites CFBundleVersion from the app version mid-build, so a
+          # number stamped into the plists here would be discarded. A
+          # post-build phase applies it to the built bundle instead.
+          mkdir -p src-tauri/gen/apple/build
+          umask 077
+          escaped=${AALOOKUP_CLIENT_TOKEN//\'/\'\\\'\'}
+          {
+            printf "export AALOOKUP_IOS_BUILD_NUMBER='%s'\n" "$GITHUB_RUN_NUMBER"
+            printf "export AALOOKUP_CLIENT_TOKEN='%s'\n" "$escaped"
+          } > src-tauri/gen/apple/build/xcode-env.sh
       - name: Build the signed IPA
         env:
           APPLE_API_ISSUER: ${{ secrets.ASC_API_ISSUER_ID }}
