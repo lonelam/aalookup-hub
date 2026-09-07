@@ -24,6 +24,16 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f version="$version" \
   -f source_sha="$source_sha"
 
+# Send another TestFlight build of an already-released version, without
+# rebuilding or republishing anything else. Each run stamps the built bundles
+# with its own run number, so App Store Connect accepts the upload as a new
+# build of the same version — which is what a rejected or superseded build in
+# review needs.
+gh workflow run release.yml --repo lonelam/aalookup-hub \
+  -f operation=ios \
+  -f version="$version" \
+  -f source_sha="$source_sha"
+
 # Build, sign, notarize, and verify macOS artifacts without publishing them.
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f operation=verify \

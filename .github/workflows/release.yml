@@ -1,17 +1,22 @@
 name: Release
 
-run-name: ${{ inputs.operation == 'refresh' && format('Refresh mirror for {0}', inputs.version) || inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
+run-name: ${{ inputs.operation == 'refresh' && format('Refresh mirror for {0}', inputs.version) || inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || inputs.operation == 'ios' && format('TestFlight build of {0} from {1}', inputs.version, inputs.source_sha) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
 
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Release, verify macOS signing without publishing, or refresh the mirror
+        # `ios` exists because App Review is slow and outside this loop: a
+        # rejected or superseded TestFlight build has to be replaced without
+        # re-releasing the three desktop platforms and Android alongside it.
+        # It publishes nothing — no GitHub release, no mirror refresh.
+        description: Release, send an iOS build to TestFlight only, verify macOS signing without publishing, or refresh the mirror
         required: true
         default: release
         type: choice
         options:
           - release
+          - ios
           - verify
           - refresh
       source_sha:
@@ -182,6 +187,9 @@ jobs:
   macos:
     name: macOS (arm64 + x64 + universal)
     needs: resolve
+    # Runs for `release` and `verify`; `refresh` never reaches here because
+    # `resolve` is skipped, and `ios` builds nothing but the IPA.
+    if: ${{ inputs.operation != 'ios' }}
     runs-on: macos-14
     timeout-minutes: 300
     permissions: {}
@@ -561,7 +569,7 @@ jobs:
   ios:
     name: iOS (IPA + TestFlight)
     needs: resolve
-    if: ${{ inputs.operation == 'release' }}
+    if: ${{ inputs.operation == 'release' || inputs.operation == 'ios' }}
     # The committed Xcode project is objectVersion 77, which Xcode reads only
     # from 16.3 on, and App Store Connect rejects uploads not built with the
     # iOS 26 SDK. macos-26's default Xcode clears both bars.
@@ -600,12 +608,32 @@ jobs:
           [[ -n "$ASC_API_KEY" && -n "$ASC_API_KEY_ID" && -n "$ASC_API_ISSUER_ID" ]] || { echo "ASC_API_KEY, ASC_API_KEY_ID and ASC_API_ISSUER_ID are required for releases" >&2; exit 1; }
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_API_KEY" > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
-      - name: Stamp a unique TestFlight build number
+      - name: Hand the Xcode phases the build number and the client token
+        env:
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
         run: |
           set -euo pipefail
-          for plist in src-tauri/gen/apple/aalookup_iOS/Info.plist src-tauri/gen/apple/ShareExtension/Info.plist; do
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$plist"
-          done
+          test -n "$AALOOKUP_CLIENT_TOKEN" || {
+            echo "AALOOKUP_CLIENT_TOKEN is required for guest API access" >&2
+            exit 1
+          }
+          # xcodebuild does not forward this job's environment to a build
+          # phase, so both values travel in the file those phases read — the
+          # same one scripts/app.mjs writes for local development.
+          #
+          # The build number cannot be stamped into the plists here: the tauri
+          # CLI runs agvtool over the app version mid-build and would discard
+          # it, which is why a post-build phase applies it to the built bundle
+          # instead. It is the run number because App Store Connect refuses a
+          # build number it has already seen, and that refusal is what used to
+          # make a second upload of one version impossible.
+          mkdir -p src-tauri/gen/apple/build
+          umask 077
+          escaped=${AALOOKUP_CLIENT_TOKEN//\'/\'\\\'\'}
+          {
+            printf "export AALOOKUP_IOS_BUILD_NUMBER='%s'\n" "$GITHUB_RUN_NUMBER"
+            printf "export AALOOKUP_CLIENT_TOKEN='%s'\n" "$escaped"
+          } > src-tauri/gen/apple/build/xcode-env.sh
       - name: Build the signed IPA
         env:
           APPLE_API_ISSUER: ${{ secrets.ASC_API_ISSUER_ID }}
