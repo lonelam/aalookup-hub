@@ -61,6 +61,14 @@ The latter identifies the public workflow revision, not the application being
 built. Deployment selection never depends on the private `deploy` branch. The
 workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
+`scripts/deploy_production.py` is that helper's caller: it validates the inputs,
+copies the archive to the production host, and invokes the root-owned installer
+there as `aalookup-deploy --protocol 2 <sha>`. Nothing on this side touches
+production state. The installer itself lives in the private source repository at
+`server/aalookup-deploy` and is installed on the host out of band, so this
+workflow can ship a bad binary — which the installer will roll back — but never
+a bad deployment procedure. Both are Python; the protocol number is what makes a
+mismatch between them fail closed instead of half-running.
 
 `pre-release.yml` accepts an exact source SHA without requiring a private source
 tag. If `version` is omitted, it derives `v<source-base-version>-pre.<12-character-sha>`.

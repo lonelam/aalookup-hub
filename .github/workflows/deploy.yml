@@ -92,6 +92,8 @@ jobs:
 
       - name: Verify deployment architecture
         run: npm run architecture:test
+      - name: Verify the production deploy helper
+        run: npm run server:deploy:test
 
       - name: Build website
         run: npm run site:build
@@ -134,4 +136,4 @@ jobs:
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_URL: ${{ vars.DEPLOY_URL }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-        run: bash ../.aalookup-hub/scripts/deploy-production.sh
+        run: python3 ../.aalookup-hub/scripts/deploy_production.py
