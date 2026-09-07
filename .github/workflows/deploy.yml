@@ -92,8 +92,12 @@ jobs:
 
       - name: Verify deployment architecture
         run: npm run architecture:test
+      #
+      # --if-present because this job checks out whichever source revision was
+      # asked for, including one older than the script: a rollback to a
+      # previous release must not fail on a missing test.
       - name: Verify the production deploy helper
-        run: npm run server:deploy:test
+        run: npm run server:deploy:test --if-present
 
       - name: Build website
         run: npm run site:build
