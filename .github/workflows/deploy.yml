@@ -93,6 +93,17 @@ jobs:
       - name: Verify deployment architecture
         run: npm run architecture:test
 
+      # The helper this job is about to invoke on production. Its tests live
+      # beside it in the source repository rather than in the architecture
+      # glob, so without naming them here nothing in this job covers the thing
+      # doing the installing.
+      #
+      # --if-present because this job checks out whichever source revision was
+      # asked for, including one older than the script: a rollback to an
+      # earlier release must not fail on a missing test.
+      - name: Verify the production deploy helper
+        run: npm run server:deploy:test --if-present
+
       - name: Build website
         run: npm run site:build
 
@@ -134,4 +145,4 @@ jobs:
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_URL: ${{ vars.DEPLOY_URL }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-        run: bash ../.aalookup-hub/scripts/deploy-production.sh
+        run: python3 ../.aalookup-hub/scripts/deploy_production.py
