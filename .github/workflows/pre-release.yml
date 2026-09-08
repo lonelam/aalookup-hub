@@ -146,6 +146,13 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # Shares Release's entry for this platform; see release.yml.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: macos-desktop
+          cache-on-failure: true
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -336,6 +343,12 @@ jobs:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: windows-desktop
+          cache-on-failure: true
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -380,6 +393,11 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-linux-android
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: android
+          cache-on-failure: true
       - name: Install frontend dependencies
         run: npm ci
       - name: Write signing keystore
@@ -459,6 +477,11 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-apple-ios
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ios
+          cache-on-failure: true
       - name: Install frontend dependencies
         run: npm ci
       - name: Install App Store Connect API key
