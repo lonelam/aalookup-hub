@@ -34,7 +34,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-PROTOCOL = "6"
+PROTOCOL = "7"
 
 # \A…\Z, not ^…$: Python's `$` also matches before a trailing newline.
 COMMIT_SHA = re.compile(r"\A[0-9a-f]{40}\Z")

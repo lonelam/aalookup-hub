@@ -91,7 +91,7 @@ jobs:
       - name: Install musl build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes file musl-tools
+          sudo apt-get install --yes file musl-tools openssl
 
       - name: Install website dependencies
         run: npm ci
@@ -116,8 +116,12 @@ jobs:
       - name: Build website
         run: npm run site:build
 
-      - name: Test server
-        run: cargo test --locked -p aalookup-server
+      # The launcher owns an isolated PostgreSQL 17 container, TLS credentials,
+      # per-test databases, and matching pg_dump/pg_restore client wrappers.
+      - name: Test server against PostgreSQL 17
+        run: |
+          docker info >/dev/null
+          node scripts/test-postgres.mjs -- test --locked -p aalookup-server --all-targets --all-features
 
       - name: Build server
         run: >-
@@ -130,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           install -d deploy/website
-          for name in aalookup-server aalookup-backup aalookup-usage-migrate aalookup-learning-migrate aalookup-membership-migrate aalookup-account-migrate aalookup-study-migrate aalookup-sqlite-retire; do
+          for name in aalookup-server aalookup-backup aalookup-database; do
             binary="target/x86_64-unknown-linux-musl/release/$name"
             file "$binary" | tee /dev/stderr \
               | grep --quiet --extended-regexp "static(ally|-pie)? linked"

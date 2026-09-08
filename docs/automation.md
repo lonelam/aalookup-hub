@@ -63,14 +63,16 @@ workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
 `scripts/deploy_production.py` is that helper's caller: it validates the inputs,
 copies the archive to the production host, and invokes the root-owned installer
-there as `aalookup-deploy --protocol 6 <sha>`. Nothing on this side touches
+there as `aalookup-deploy --protocol 7 <sha>`. Nothing on this side touches
 production state. The installer itself lives in the private source repository at
 `server/aalookup-deploy` and is installed on the host out of band, so this
 workflow can ship a bad binary — which the installer will roll back — but never
 a bad deployment procedure. Both are Python; the protocol number is what makes a
 mismatch between them fail closed instead of half-running.
-Protocol 6 packages the API, backup, all five PostgreSQL migration tools, and
-`aalookup-sqlite-retire` from the same source build. The installed helper supports
+The server quality gate runs the source repository's isolated PostgreSQL 17
+launcher, including matching PostgreSQL client tools and automatic fixture cleanup.
+Protocol 7 packages the API, backup, and native `aalookup-database` initializer
+from the same source build. The installed helper supports
 PostgreSQL-only production after SQLite retirement and checks unchanged issuer
 identity and authority when rolling back binaries. It never restores live
 PostgreSQL data during deployment.
