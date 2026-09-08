@@ -63,7 +63,7 @@ workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
 `scripts/deploy_production.py` is that helper's caller: it validates the inputs,
 copies the archive to the production host, and invokes the root-owned installer
-there as `aalookup-deploy --protocol 2 <sha>`. Nothing on this side touches
+there as `aalookup-deploy --protocol 4 <sha>`. Nothing on this side touches
 production state. The installer itself lives in the private source repository at
 `server/aalookup-deploy` and is installed on the host out of band, so this
 workflow can ship a bad binary — which the installer will roll back — but never

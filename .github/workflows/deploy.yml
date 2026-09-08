@@ -130,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           install -d deploy/website
-          for name in aalookup-server aalookup-backup aalookup-usage-migrate aalookup-learning-migrate aalookup-membership-migrate; do
+          for name in aalookup-server aalookup-backup aalookup-usage-migrate aalookup-learning-migrate aalookup-membership-migrate aalookup-account-migrate; do
             binary="target/x86_64-unknown-linux-musl/release/$name"
             file "$binary" | tee /dev/stderr \
               | grep --quiet --extended-regexp "static(ally|-pie)? linked"
