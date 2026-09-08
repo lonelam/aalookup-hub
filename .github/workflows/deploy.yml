@@ -121,7 +121,7 @@ jobs:
 
       - name: Build server
         run: >-
-          cargo build --locked --release -p aalookup-server
+          cargo build --locked --release -p aalookup-server --bins
           --target x86_64-unknown-linux-musl
 
       - name: Package deployment
@@ -129,12 +129,13 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          server_binary="target/x86_64-unknown-linux-musl/release/aalookup-server"
-          file "$server_binary" | tee /dev/stderr \
-            | grep --quiet --extended-regexp "static(ally|-pie)? linked"
-
           install -d deploy/website
-          install -m 0755 "$server_binary" deploy/aalookup-server
+          for name in aalookup-server aalookup-backup aalookup-usage-migrate aalookup-learning-migrate aalookup-membership-migrate; do
+            binary="target/x86_64-unknown-linux-musl/release/$name"
+            file "$binary" | tee /dev/stderr \
+              | grep --quiet --extended-regexp "static(ally|-pie)? linked"
+            install -m 0755 "$binary" "deploy/$name"
+          done
           cp -a website/dist/. deploy/website/
           tar -C deploy -czf "aalookup-${SOURCE_SHA}.tar.gz" .
 
