@@ -111,6 +111,13 @@ Create these repository secrets for release builds:
 - `APPLE_ID` (Apple account email used for notarization)
 - `APPLE_PASSWORD` (an Apple app-specific password, never the account password)
 - `AALOOKUP_RELEASE_REFRESH_TOKEN` (optional)
+- `GLITCHTIP_AUTH_TOKEN` (optional; a GlitchTip auth token with `org:read`,
+  `project:read`, `project:write` and `project:releases`. Every client job and
+  the deployment pass it to the private repository's release scripts, which use
+  it to upload the source maps and debug files that turn a shipped stack trace
+  back into source. Without it a release still builds and says so in its log,
+  but its crashes can never be symbolicated afterwards — a map belongs to the
+  exact bundle that produced it)
 
 The workflow pins `APPLE_SIGNING_IDENTITY` to
 `Developer ID Application: Zenan Lai (5CP5A63Q2H)` and `APPLE_TEAM_ID` to

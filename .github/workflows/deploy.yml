@@ -114,7 +114,20 @@ jobs:
         run: npm run server:deploy:test --if-present
 
       - name: Build website
-        run: npm run site:build
+        env:
+          GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Hidden source maps, uploaded to the aalookup-website project and
+          # then deleted from dist/ — a map left there would be one guessed URL
+          # away from publishing the site's source. scripts/symbols.mjs does
+          # both halves and refuses to leave them behind.
+          if [[ -n "${GLITCHTIP_AUTH_TOKEN:-}" ]]; then
+            export AALOOKUP_UPLOAD_SYMBOLS=1
+          else
+            echo "::warning::No GLITCHTIP_AUTH_TOKEN; the website ships without source maps"
+          fi
+          npm run site:build
 
       # The launcher owns an isolated PostgreSQL 17 container, TLS credentials,
       # per-test databases, and matching pg_dump/pg_restore client wrappers.
