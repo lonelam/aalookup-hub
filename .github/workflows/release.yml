@@ -298,6 +298,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
         run: bash scripts/release-macos.sh
 
       - name: Notarize and staple disk images
@@ -491,6 +492,7 @@ jobs:
           AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
         shell: pwsh
         run: "& \"$PWD/scripts/release-windows.ps1\""
 
@@ -573,6 +575,7 @@ jobs:
           AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           export JAVA_HOME="$JAVA_HOME_21_X64"
@@ -634,40 +637,45 @@ jobs:
           [[ -n "$ASC_API_KEY" && -n "$ASC_API_KEY_ID" && -n "$ASC_API_ISSUER_ID" ]] || { echo "ASC_API_KEY, ASC_API_KEY_ID and ASC_API_ISSUER_ID are required for releases" >&2; exit 1; }
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_API_KEY" > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
-      - name: Hand the Xcode phases the build number and the client token
-        env:
-          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$AALOOKUP_CLIENT_TOKEN" || {
-            echo "AALOOKUP_CLIENT_TOKEN is required for guest API access" >&2
-            exit 1
-          }
-          # xcodebuild does not forward this job's environment to a build
-          # phase, so both values travel in the file those phases read — the
-          # same one scripts/app.mjs writes for local development.
-          #
-          # The build number cannot be stamped into the plists here: the tauri
-          # CLI runs agvtool over the app version mid-build and would discard
-          # it, which is why a post-build phase applies it to the built bundle
-          # instead. It is the run number because App Store Connect refuses a
-          # build number it has already seen, and that refusal is what used to
-          # make a second upload of one version impossible.
-          mkdir -p src-tauri/gen/apple/build
-          umask 077
-          escaped=${AALOOKUP_CLIENT_TOKEN//\'/\'\\\'\'}
-          {
-            printf "export AALOOKUP_IOS_BUILD_NUMBER='%s'\n" "$GITHUB_RUN_NUMBER"
-            printf "export AALOOKUP_CLIENT_TOKEN='%s'\n" "$escaped"
-          } > src-tauri/gen/apple/build/xcode-env.sh
       - name: Build the signed IPA
         env:
           APPLE_API_ISSUER: ${{ secrets.ASC_API_ISSUER_ID }}
           APPLE_API_KEY: ${{ secrets.ASC_API_KEY_ID }}
+          AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          AALOOKUP_IOS_BUILD_NUMBER: ${{ github.run_number }}
+          GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           export APPLE_API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8"
-          npx tauri ios build --export-method app-store-connect
+          # scripts/release-ios.sh writes the file the Xcode phases read and
+          # then builds. It exists because this job used to write that file
+          # itself, listing the client token and the build number and nothing
+          # else — which is how iOS became the one platform whose builds
+          # compiled no error-reporting DSN, a hole no server-side change can
+          # close. The private repo owns that default, next to the other three
+          # release scripts.
+          #
+          # A re-release of a revision from before that script keeps the old
+          # inline behaviour; it reports no errors, as it did when it shipped.
+          if [[ -x scripts/release-ios.sh ]]; then
+            bash scripts/release-ios.sh
+          else
+            echo "::warning::This source revision predates scripts/release-ios.sh; building without an error-reporting DSN"
+            test -n "$AALOOKUP_CLIENT_TOKEN" || {
+              echo "AALOOKUP_CLIENT_TOKEN is required for guest API access" >&2
+              exit 1
+            }
+            mkdir -p src-tauri/gen/apple/build
+            umask 077
+            escaped=${AALOOKUP_CLIENT_TOKEN//\'/\'\\\'\'}
+            {
+              printf "export AALOOKUP_IOS_BUILD_NUMBER='%s'\n" "$GITHUB_RUN_NUMBER"
+              printf "export AALOOKUP_CLIENT_TOKEN='%s'\n" "$escaped"
+            } > src-tauri/gen/apple/build/xcode-env.sh
+            npx tauri ios build --export-method app-store-connect
+            mkdir -p dist-release
+            cp src-tauri/gen/apple/build/arm64/AALookup.ipa dist-release/AALookup-ios-arm64.ipa
+          fi
       - name: Upload to TestFlight
         env:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
