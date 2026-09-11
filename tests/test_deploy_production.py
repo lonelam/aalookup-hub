@@ -20,7 +20,7 @@ caller = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(caller)
 BINARIES = (
     "aalookup-server", "aalookup-backup", "aalookup-database",
-    "aalookup-billing", "aalookup-membership-transition",
+    "aalookup-membership-transition",
 )
 SOURCE_SHA = "e" * 40
 
@@ -71,7 +71,21 @@ class PackagingContract(unittest.TestCase):
                  "SOURCE_SHA": SOURCE_SHA, **extra_env},
         )
 
+    def test_build_and_package_select_the_same_four_production_binaries(self):
+        source = (ROOT / ".github/workflows/deploy.yml").read_text()
+        build = source.split("- name: Build server\n", 1)[1].split("- name:", 1)[0]
+        package = source.split("- name: Package deployment\n", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cargo build --locked --release -p aalookup-server", build)
+        self.assertIn("--target x86_64-unknown-linux-musl", build)
+        self.assertEqual(tuple(re.findall(r"--bin ([a-z-]+)", build)), BINARIES)
+        self.assertEqual(tuple(re.search(r"binaries=\(([^)]+)\)", package).group(1).split()), BINARIES)
+        self.assertNotIn("--bins", build)
+        self.assertNotIn("aalookup-billing", build + package)
+
     def test_archive_contains_every_operator_from_the_same_build_output(self):
+        # Other local Cargo outputs must not widen the production payload.
+        for name in ("aalookup-billing", "aalookup-billing-catalog"):
+            (self.outputs / name).write_bytes(b"excluded tool")
         result = self.package()
         self.assertEqual(result.returncode, 0, result.stderr)
         archive = self.root / f"aalookup-{SOURCE_SHA}.tar.gz"
@@ -85,7 +99,7 @@ class PackagingContract(unittest.TestCase):
         self.assertIn(archive.name, result.stdout)
 
     def test_missing_empty_or_linked_operator_cannot_publish_an_archive(self):
-        for name in BINARIES[3:]:
+        for name in BINARIES:
             binary = self.outputs / name
             for kind in ("missing", "empty", "symlink"):
                 with self.subTest(name=name, kind=kind):
@@ -102,13 +116,13 @@ class PackagingContract(unittest.TestCase):
                     binary.write_bytes(f"fixture:{name}".encode())
 
     def test_dynamically_linked_operator_cannot_publish_an_archive(self):
-        result = self.package(TEST_DYNAMIC_BINARY="aalookup-billing")
+        result = self.package(TEST_DYNAMIC_BINARY="aalookup-membership-transition")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
 
 
 class CallerContract(unittest.TestCase):
-    def run_caller(self, deploy_status=0, **environment):
+    def run_caller(self, deploy_status=0, check_status=0, **environment):
         with tempfile.TemporaryDirectory() as directory:
             inputs = {
                 "source_sha": SOURCE_SHA, "deploy_user": "www", "deploy_host": "example.test",
@@ -118,6 +132,10 @@ class CallerContract(unittest.TestCase):
             calls = []
             def run(args, **_kwargs):
                 calls.append(args)
+                if args[0] == "ssh" and "--check" in args[-1]:
+                    if check_status:
+                        raise caller.Fail("host protocol check failed")
+                    return subprocess.CompletedProcess(args, 0)
                 result = deploy_status if args[0] == "ssh" and "--protocol" in args[-1] else 0
                 return subprocess.CompletedProcess(args, result)
             with patch.object(caller, "validated_inputs", return_value=inputs), \
@@ -125,27 +143,41 @@ class CallerContract(unittest.TestCase):
                     patch.dict(os.environ, {"RUNNER_TEMP": directory, **environment}, clear=True), \
                     patch.object(caller.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as key_probe, \
                     patch.object(caller, "run", side_effect=run):
-                result = caller.main()
+                try:
+                    result = caller.main()
+                except caller.Fail as error:
+                    result = error
             key_probe.assert_called_once()
             self.assertEqual(list(Path(directory).iterdir()), [], "temporary credential files must be removed")
             return result, calls
 
-    def test_caller_uses_protocol_eight_with_strict_host_identity(self):
+    def test_caller_checks_protocol_nine_before_upload_with_strict_host_identity(self):
         result, calls = self.run_caller()
+        self.assertEqual(caller.PROTOCOL, "9")
         self.assertEqual(result, 0)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][0], "scp")
-        self.assertEqual(calls[1][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --protocol 8 {SOURCE_SHA}")
+        self.assertEqual([args[0] for args in calls], ["ssh", "scp", "ssh"])
+        self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 9")
+        self.assertEqual(calls[2][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --protocol 9 {SOURCE_SHA}")
         for args in calls:
             self.assertIn("StrictHostKeyChecking=yes", args)
             self.assertIn("IdentitiesOnly=yes", args)
 
-    def test_rejected_protocol_is_not_retried_with_a_weaker_contract(self):
+    def test_protocol_mismatch_never_uploads_or_deploys(self):
+        for operation in ("release", "review-pages-plan", "review-pages-apply"):
+            with self.subTest(operation=operation):
+                result, calls = self.run_caller(check_status=1, DEPLOY_OPERATION=operation,
+                                                REVIEW_MANIFEST_SHA256="d" * 64)
+                self.assertIsInstance(result, caller.Fail)
+                self.assertEqual(str(result), "host protocol check failed")
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 9")
+
+    def test_failed_deployment_cleans_archive_without_a_weaker_protocol_retry(self):
         result, calls = self.run_caller(deploy_status=1)
         self.assertEqual(result, 1)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(calls[-1][-1], f"rm -f -- /home/www/deploy/aalookup-{SOURCE_SHA}.tar.gz")
-        self.assertEqual(sum("--protocol" in args[-1] for args in calls), 1)
+        self.assertEqual(sum("--protocol" in args[-1] for args in calls), 2)
 
     def test_review_plan_and_apply_name_the_same_pinned_manifest_without_release_fallback(self):
         manifest = "d" * 64
@@ -153,10 +185,11 @@ class CallerContract(unittest.TestCase):
             with self.subTest(operation=operation):
                 result, calls = self.run_caller(DEPLOY_OPERATION=operation, REVIEW_MANIFEST_SHA256=manifest)
                 self.assertEqual(result, 0)
-                self.assertEqual(len(calls), 2)
+                self.assertEqual(len(calls), 3)
+                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 9")
+                self.assertEqual(calls[2][-1],
+                                 f"sudo -n -- /usr/local/sbin/aalookup-deploy --{operation} --protocol 9 {SOURCE_SHA} {manifest}")
                 self.assertEqual(calls[1][-1],
-                                 f"sudo -n -- /usr/local/sbin/aalookup-deploy --{operation} --protocol 8 {SOURCE_SHA} {manifest}")
-                self.assertEqual(calls[0][-1],
                                  f"www@example.test:/home/www/deploy/aalookup-review-pages-{SOURCE_SHA}-{manifest}.tar.gz")
 
     def test_unknown_operation_or_unpinned_review_is_rejected_before_network(self):

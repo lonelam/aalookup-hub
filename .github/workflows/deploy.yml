@@ -142,7 +142,9 @@ jobs:
 
       - name: Build server
         run: >-
-          cargo build --locked --release -p aalookup-server --bins
+          cargo build --locked --release -p aalookup-server
+          --bin aalookup-server --bin aalookup-backup
+          --bin aalookup-database --bin aalookup-membership-transition
           --target x86_64-unknown-linux-musl
 
       - name: Package deployment
@@ -151,7 +153,8 @@ jobs:
         run: |
           set -euo pipefail
           install -d deploy/website
-          for name in aalookup-server aalookup-backup aalookup-database aalookup-billing aalookup-membership-transition; do
+          binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition)
+          for name in "${binaries[@]}"; do
             binary="target/x86_64-unknown-linux-musl/release/$name"
             if [[ ! -f "$binary" || -L "$binary" || ! -s "$binary" ]]; then
               echo "Missing regular nonempty deployment binary: $name" >&2

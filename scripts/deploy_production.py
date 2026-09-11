@@ -34,7 +34,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-PROTOCOL = "8"
+PROTOCOL = "9"
 
 # \A…\Z, not ^…$: Python's `$` also matches before a trailing newline.
 COMMIT_SHA = re.compile(r"\A[0-9a-f]{40}\Z")
@@ -159,6 +159,13 @@ def main() -> int:
         ssh_options = [*common, "-p", inputs["deploy_port"]]
         scp_options = [*common, "-P", inputs["deploy_port"]]
 
+        # Refuse a mismatched host contract before uploading an artifact. The
+        # check also applies to the reviewed-page transport and never deploys.
+        check_command = (
+            "sudo -n -- /usr/local/sbin/aalookup-deploy "
+            f"--check --protocol {PROTOCOL}"
+        )
+        run(["ssh", *ssh_options, destination, check_command])
         run(["scp", *scp_options, str(archive), f"{destination}:{remote_archive}"])
 
         # The remote shell receives one string, so the only interpolated value
