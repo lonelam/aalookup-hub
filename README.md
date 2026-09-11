@@ -25,15 +25,15 @@ AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把�
 
 - **贴合语境的解释**：结合当前句子选择正确义项，而不是罗列整本词典。
 - **本地 MDict 词典**：使用自己的词典文件，并保留词典原有的排版与资源。
-- **模型由你选择**：可使用 AALookup 服务，或配置自己的 OpenAI 兼容服务。
+- **在线释义**：联网且有可用查词次数时自动补充释义；离线或次数用完后，本地词典仍可使用。
 - **从阅读进入学习**：保存遇到的生词，用 FSRS 安排复习。
 - **词书训练**：通过跟写、听写和默写学习考试词汇，再进入同一复习队列。
 - **可选账号同步**：不登录也能查词；登录后可同步单词与学习进度。
 
 ## 本地优先
 
-本地词典内容留在电脑上。联网解释只有在设置中明确启用后才会请求所选服务；
-查词无需账号，学习同步也由用户自行选择。
+本地词典文件留在设备上。联网且有可用次数时，主动查词会发送单词、阅读上下文
+和相关词典文本以生成释义。查词无需账号，学习同步由用户自行选择。
 
 ## 支持平台
 
@@ -42,8 +42,8 @@ AALookup 是一款面向 macOS 和 Windows 的桌面查词与学习工具。把�
 | macOS | macOS 13 或更高版本 | Universal、Apple Silicon、Intel DMG |
 | Windows | Windows 10/11 | x86_64 NSIS 安装程序 |
 
-前往 [Releases](https://github.com/lonelam/aalookup-hub/releases) 查看公开版本，
-或在 [产品主页](https://aalookup.com/#download) 获取适合当前设备的安装包。
+[Releases](https://github.com/lonelam/aalookup-hub/releases) 中标记为预发布的版本用于验收。
+在 [产品主页](https://aalookup.com/#download) 获取已通过验收、适合当前设备的安装包。
 
 ## 关于这个仓库
 

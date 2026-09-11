@@ -1,6 +1,6 @@
 name: Release
 
-run-name: ${{ inputs.operation == 'refresh' && format('Refresh mirror for {0}', inputs.version) || inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || inputs.operation == 'ios' && format('TestFlight build of {0} from {1}', inputs.version, inputs.source_sha) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
+run-name: ${{ inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || inputs.operation == 'ios' && format('TestFlight build of {0} from {1}', inputs.version, inputs.source_sha) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
         # rejected or superseded TestFlight build has to be replaced without
         # re-releasing the three desktop platforms and Android alongside it.
         # It publishes nothing — no GitHub release, no mirror refresh.
-        description: Release, send an iOS build to TestFlight only, verify macOS signing without publishing, or refresh the mirror
+        description: Build an acceptance candidate, send an iOS build to TestFlight, or verify macOS signing
         required: true
         default: release
         type: choice
@@ -18,7 +18,6 @@ on:
           - release
           - ios
           - verify
-          - refresh
       source_sha:
         description: Exact lowercase commit SHA from lonelam/aalookup
         required: false
@@ -37,7 +36,6 @@ concurrency:
 jobs:
   resolve:
     name: Resolve private source
-    if: ${{ inputs.operation != 'refresh' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {}
@@ -187,8 +185,7 @@ jobs:
   macos:
     name: macOS (arm64 + x64 + universal)
     needs: resolve
-    # Runs for `release` and `verify`; `refresh` never reaches here because
-    # `resolve` is skipped, and `ios` builds nothing but the IPA.
+    # Runs for `release` and `verify`; `ios` builds nothing but the IPA.
     if: ${{ inputs.operation != 'ios' }}
     runs-on: macos-14
     timeout-minutes: 300
@@ -698,7 +695,7 @@ jobs:
           retention-days: 3
 
   release:
-    name: Publish public GitHub Release
+    name: Publish GitHub acceptance candidate
     needs:
       - resolve
       - macos
@@ -712,6 +709,17 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: public-workflow
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify trusted candidate packaging
+        run: python3 -m unittest discover -s public-workflow/tests -p test_release_candidate.py
+
       - name: Download macOS artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -744,7 +752,7 @@ jobs:
           name: aalookup-release-notes
           path: release-notes
 
-      - name: Stage and publish immutable public release
+      - name: Stage and publish immutable acceptance candidate
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -780,6 +788,10 @@ jobs:
             exit 1
           fi
 
+          python3 public-workflow/scripts/release_provenance.py \
+            dist-release "$PRIVATE_SOURCE_SHA" "$PUBLIC_WORKFLOW_SHA" "$VERSION"
+          expected+=(release-provenance.json)
+
           # The changelog goes above the install block, which keeps the two
           # source markers at the end of the body where the draft-retry check
           # below looks for them.
@@ -791,6 +803,12 @@ jobs:
             echo >> "$notes"
           fi
           cat >> "$notes" <<EOF
+          ## Acceptance candidate
+
+          This build is available for acceptance testing. Website downloads and in-app
+          updates will offer it only after its exact source and artifacts pass the
+          website release gate. It is not marked as the latest GitHub release.
+
           ## Install (Windows)
 
           Download \`AALookup-windows-x86_64-setup.exe\`. The installer is not code-signed,
@@ -908,7 +926,9 @@ jobs:
                 --raw-field target_commitish="$PUBLIC_WORKFLOW_SHA" \
                 --raw-field name="$VERSION" \
                 --raw-field body="$(< "$notes")" \
-                -F draft=true
+                -F draft=true \
+                -F prerelease=true \
+                --raw-field make_latest=false
             )"
           else
             release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
@@ -917,7 +937,9 @@ jobs:
                 "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
                 --raw-field name="$VERSION" \
                 --raw-field body="$(< "$notes")" \
-                -F draft=true
+                -F draft=true \
+                -F prerelease=true \
+                --raw-field make_latest=false
             )"
           fi
           release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
@@ -958,51 +980,6 @@ jobs:
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             -F draft=false \
-            --raw-field make_latest=true >/dev/null
-
-  refresh:
-    name: Refresh production release mirror
-    needs: release
-    if: ${{ always() && (inputs.operation == 'refresh' || needs.release.result == 'success') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions: {}
-
-    steps:
-      - name: Tell the release mirror to refresh
-        env:
-          REFRESH_TOKEN: ${{ secrets.AALOOKUP_RELEASE_REFRESH_TOKEN }}
-          ORIGIN: ${{ vars.AALOOKUP_UPDATE_ORIGIN || 'https://aalookup.com' }}
-          OPERATION: ${{ inputs.operation }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -uo pipefail
-          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "version must be v followed by a stable SemVer version" >&2
-            exit 1
-          fi
-          if [[ -z "${REFRESH_TOKEN:-}" ]]; then
-            if [[ "$OPERATION" == "refresh" ]]; then
-              echo "AALOOKUP_RELEASE_REFRESH_TOKEN is required for an explicit refresh" >&2
-              exit 1
-            fi
-            echo "::warning::No AALOOKUP_RELEASE_REFRESH_TOKEN secret; the mirror will pick this up on its next refresh."
-            exit 0
-          fi
-          encoded_version="$(jq --null-input --raw-output --arg version "$VERSION" '$version | @uri')"
-          for attempt in 1 2 3; do
-            status="$(curl --silent --show-error --output /dev/stderr --write-out '%{http_code}' \
-              --max-time 20 --request POST \
-              --header "Authorization: Bearer $REFRESH_TOKEN" \
-              "${ORIGIN%/}/api/v1/releases/refresh?version=$encoded_version" || echo "000")"
-            echo "attempt $attempt: HTTP $status"
-            if [[ "$status" == "202" ]]; then
-              exit 0
-            fi
-            sleep $((attempt * 5))
-          done
-          if [[ "$OPERATION" == "refresh" ]]; then
-            echo "Could not explicitly refresh the release mirror" >&2
-            exit 1
-          fi
-          echo "::warning::Could not reach the release mirror; it will refresh on its own schedule."
+            -F prerelease=true \
+            --raw-field make_latest=false >/dev/null
+          echo "Candidate published. Acceptance and website distribution remain separate."

@@ -9,6 +9,10 @@ on:
         description: Exact commit SHA from lonelam/aalookup to deploy
         required: true
         type: string
+      client_release_tag:
+        description: Optional client release associated with this website rollout; requires approval of its exact source
+        required: false
+        type: string
       request_id:
         description: Unique caller ID used to find this workflow run
         required: false
@@ -168,6 +172,15 @@ jobs:
           ref: ${{ github.sha }}
           path: .aalookup-hub
           persist-credentials: false
+
+      - name: Check approval for a client-associated website rollout
+        if: ${{ inputs.client_release_tag != '' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          CLIENT_RELEASE_TAG: ${{ inputs.client_release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+        run: python3 .aalookup-hub/scripts/check_client_release.py
 
       - name: Verify trusted deployment tooling
         run: python3 -m unittest discover -s ../.aalookup-hub/tests

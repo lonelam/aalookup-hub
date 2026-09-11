@@ -17,7 +17,7 @@ npm --prefix ../aalookup run app:deploy
 # Or deploy any pushed private commit by its full SHA.
 npm --prefix ../aalookup run app:deploy -- <40-character-source-sha>
 
-# Publish a tagged private source revision as a public release.
+# Build a tagged revision as a GitHub acceptance candidate (not GitHub Latest).
 version=v0.4.0
 source_sha="$(git -C ../aalookup rev-parse "${version}^{commit}")"
 gh workflow run release.yml --repo lonelam/aalookup-hub \
@@ -40,10 +40,9 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f version="$version" \
   -f source_sha="$source_sha"
 
-# Refresh an already-published version without rebuilding it.
-gh workflow run release.yml --repo lonelam/aalookup-hub \
-  -f operation=refresh \
-  -f version="$version"
+# After approving this exact client version and source in the website release
+# gate, deploy its associated website/server revision with the approval check.
+npm --prefix ../aalookup run app:deploy -- --client-release "$version" "$source_sha"
 
 # Build and publish a GitHub-only prerelease from any pushed private commit.
 source_sha="$(git -C ../aalookup rev-parse HEAD)"
@@ -55,6 +54,30 @@ gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
   -f source_sha="$source_sha" \
   -f version=v0.3.30-rc.1
 ```
+
+`release.yml` publishes a stable `vX.Y.Z` tag as a public GitHub prerelease with
+`make_latest=false`, only after macOS, Windows, Android and iOS builds succeed.
+It no longer refreshes the production mirror or dispatches a website deployment.
+TestFlight upload remains part of the existing iOS testing flow; it does not
+submit an App Store release.
+
+The candidate includes `release-provenance.json` with `schemaVersion: 1`,
+`sourceCommit`, `workflowCommit`, `releaseTag`, and an `assets` array sorted by
+name. Each of the 13 platform artifacts has its exact `name`, `sha256` and `size`
+computed after signing/notarization and before upload. The provenance file is
+not self-listed. Only the reviewed installers and metadata are uploaded; private
+source files are never release assets. Existing public assets cannot be replaced.
+
+The website release gate approves the exact source and artifact set before its
+download feed and updater feed advance. A GitHub publication, metadata refresh,
+or ordinary website deployment does not approve a candidate.
+For a website rollout associated with a client release, pass
+`--client-release vX.Y.Z` to `app:deploy` (or set the same `client_release_tag`
+workflow input). Immediately before deployment, the trusted helper checks the
+public `/api/v1/releases/latest` response against that version and the exact
+`source_sha`. Legacy manifests without `sourceCommit` fail this check. General
+server operations omit that optional input and remain independent of client
+releases; this is not a blanket restriction on all website content deployment.
 
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
 The latter identifies the public workflow revision, not the application being
@@ -94,7 +117,7 @@ Before schema migration, also stop independently running maintenance writers.
 Rollback restores matching prior operators or removes tools first installed by a
 failed attempt; a later website failure keeps the healthy server and operators.
 
-Run the trusted caller and workflow packaging tests without SSH, Docker, or Cargo:
+Run the trusted caller and workflow packaging tests without SSH, Docker, or Cargo (including candidate provenance and associated-rollout gates):
 
 ```sh
 python3 -m unittest discover -s tests
@@ -139,7 +162,6 @@ Create these repository secrets for release builds:
 - `APPLE_CERTIFICATE_PASSWORD` (empty when the `.p12` is passwordless)
 - `APPLE_ID` (Apple account email used for notarization)
 - `APPLE_PASSWORD` (an Apple app-specific password, never the account password)
-- `AALOOKUP_RELEASE_REFRESH_TOKEN` (optional)
 - `GLITCHTIP_AUTH_TOKEN` (optional; a GlitchTip auth token with `org:read`,
   `project:read`, `project:write` and `project:releases`. Every client job and
   the deployment pass it to the private repository's release scripts, which use
@@ -180,9 +202,6 @@ signs and notarizes each app, then the workflow notarizes each final DMG. It
 checks the Developer ID authority, Team ID, hardened runtime, secure timestamps,
 stapled tickets, Gatekeeper assessments, DMG signatures, and ZIP integrity
 before uploading any macOS artifact.
-
-The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It
-defaults to `https://aalookup.com`.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
 workflow token to request write access. Only the final publish jobs request
