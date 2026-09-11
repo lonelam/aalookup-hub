@@ -1,0 +1,118 @@
+name: Publish public review pages
+
+run-name: Public pages ${{ inputs.operation }} ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact private source commit containing the reviewed builder and policies
+        required: true
+        type: string
+      manifest_sha256:
+        description: SHA-256 of the reviewed manifest.json
+        required: true
+        type: string
+      inventory_json:
+        description: Exact read-only filesystem inventory from the production helper
+        required: true
+        type: string
+      operation:
+        description: Verify the complete plan, or publish that exact reviewed manifest
+        required: true
+        default: review-pages-plan
+        type: choice
+        options:
+          - review-pages-plan
+          - review-pages-apply
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - name: Validate immutable inputs
+        working-directory: ${{ github.workspace }}
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REVIEW_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"]), "invalid source SHA"
+          assert re.fullmatch(r"[0-9a-f]{64}", os.environ["REVIEW_MANIFEST_SHA256"]), "invalid manifest hash"
+          PY
+
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          path: source
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Prepare candidate against the observed public site
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          INVENTORY_JSON: ${{ inputs.inventory_json }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
+          python3 - <<'PY'
+          import json, os, pathlib
+          value = os.environ["INVENTORY_JSON"]
+          assert len(value.encode()) <= 32768, "inventory is too large"
+          json.loads(value)
+          pathlib.Path("review-inventory.json").write_text(value)
+          PY
+          node scripts/website-review-pages.mjs snapshot --out review-snapshot
+          node scripts/website-review-pages.mjs build --snapshot review-snapshot --out review-candidate --source-sha "$SOURCE_SHA" --inventory review-inventory.json
+
+      # Only Hub-owned tooling receives credentials, after all source code has run.
+      - name: Checkout trusted deployment tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .aalookup-hub
+          persist-credentials: false
+
+      - name: Verify trusted deployment tooling
+        run: python3 -m unittest discover -s ../.aalookup-hub/tests
+
+      - name: Package only the approved public files
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REVIEW_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: python3 ../.aalookup-hub/scripts/package_review_pages.py
+
+      - name: Run the root-owned public-page operation
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+          DEPLOY_OPERATION: ${{ inputs.operation }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REVIEW_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: python3 ../.aalookup-hub/scripts/deploy_production.py

@@ -147,14 +147,20 @@ jobs:
         run: |
           set -euo pipefail
           install -d deploy/website
-          for name in aalookup-server aalookup-backup aalookup-database; do
+          for name in aalookup-server aalookup-backup aalookup-database aalookup-billing aalookup-membership-transition; do
             binary="target/x86_64-unknown-linux-musl/release/$name"
+            if [[ ! -f "$binary" || -L "$binary" || ! -s "$binary" ]]; then
+              echo "Missing regular nonempty deployment binary: $name" >&2
+              exit 1
+            fi
             file "$binary" | tee /dev/stderr \
               | grep --quiet --extended-regexp "static(ally|-pie)? linked"
+            sha256sum "$binary"
             install -m 0755 "$binary" "deploy/$name"
           done
           cp -a website/dist/. deploy/website/
           tar -C deploy -czf "aalookup-${SOURCE_SHA}.tar.gz" .
+          sha256sum "aalookup-${SOURCE_SHA}.tar.gz"
 
       - name: Checkout trusted deployment tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -162,6 +168,9 @@ jobs:
           ref: ${{ github.sha }}
           path: .aalookup-hub
           persist-credentials: false
+
+      - name: Verify trusted deployment tooling
+        run: python3 -m unittest discover -s ../.aalookup-hub/tests
 
       - name: Deploy production
         env:

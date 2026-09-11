@@ -63,7 +63,7 @@ workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
 `scripts/deploy_production.py` is that helper's caller: it validates the inputs,
 copies the archive to the production host, and invokes the root-owned installer
-there as `aalookup-deploy --protocol 7 <sha>`. Nothing on this side touches
+there as `aalookup-deploy --protocol 8 <sha>`. Nothing on this side touches
 production state. The installer itself lives in the private source repository at
 `server/aalookup-deploy` and is installed on the host out of band, so this
 workflow can ship a bad binary — which the installer will roll back — but never
@@ -71,11 +71,40 @@ a bad deployment procedure. Both are Python; the protocol number is what makes a
 mismatch between them fail closed instead of half-running.
 The server quality gate runs the source repository's isolated PostgreSQL 17
 launcher, including matching PostgreSQL client tools and automatic fixture cleanup.
-Protocol 7 packages the API, backup, and native `aalookup-database` initializer
-from the same source build. The installed helper supports
+Protocol 8 packages `aalookup-server`, `aalookup-backup`, `aalookup-database`,
+`aalookup-billing`, and `aalookup-membership-transition` from the same source
+revision and `x86_64-unknown-linux-musl` release output. Each must be a regular,
+nonempty, statically linked binary; the workflow logs each SHA-256 and the final
+archive SHA-256. Both operators are mandatory, even when billing is disabled.
+An older source SHA lacking either operator cannot produce a protocol-8 package;
+never substitute a binary from another revision or retry with protocol 7.
+The installed helper supports
 PostgreSQL-only production after SQLite retirement and checks unchanged issuer
 identity and authority when rolling back binaries. It never restores live
 PostgreSQL data during deployment.
+
+Protocol 7 remains the historical three-binary contract. To activate protocol 8,
+merge this workflow and caller together, install the matching root-owned helper
+out of band, verify `aalookup-deploy --check --protocol 8`, then dispatch the
+reviewed source SHA. Pause deployment dispatches during that coordination: the
+helper and caller intentionally reject different protocol versions. Merging this
+repository does not install the host helper. Installing the tools does not run
+billing reconciliation, apply an existing-user campaign, or enable sales.
+Before schema migration, also stop independently running maintenance writers.
+Rollback restores matching prior operators or removes tools first installed by a
+failed attempt; a later website failure keeps the healthy server and operators.
+
+Run the trusted caller and workflow packaging tests without SSH, Docker, or Cargo:
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+The workflow runs this gate before invoking the deployment caller. Packaging
+tests execute the actual workflow shell with fixture binaries, mock only ELF
+inspection, and check archive membership, permissions, missing operators and
+dynamic-link rejection. Caller tests mock SSH and verify protocol 8, strict host
+identity and failure cleanup without a fallback protocol.
 
 `pre-release.yml` accepts an exact source SHA without requiring a private source
 tag. If `version` is omitted, it derives `v<source-base-version>-pre.<12-character-sha>`.
@@ -185,3 +214,29 @@ Repository and environment secrets are available to anyone who can replace a
 trusted workflow with code that exports them. Keep write access narrow, protect
 the default branch, require review for `.github/workflows/**`, and add required
 reviewers to the `production` environment.
+
+## Public review pages
+
+`deploy-review-pages.yml` is a separate bounded operation, defaulting to
+`review-pages-plan`. It shares the `production-deploy` concurrency group and
+production environment with full deployment. Its required inputs are an exact
+private source SHA, the approved `manifest.json` SHA-256, and the root helper's
+read-only filesystem inventory JSON. Choose `review-pages-apply` only for the
+reviewed manifest; a changed live base or rebuilt candidate refuses publication.
+
+The private source's public-page builder runs without deployment credentials.
+The trusted Hub packager then verifies the manifest hash and packages only the
+listed public HTML and fixed navigation script; local review metadata and all
+other assets are excluded. The caller invokes the existing root-owned helper's
+explicit review plan/apply mode with protocol 8 and the manifest hash. It never
+falls back to full deployment or a weaker protocol. This mode does not stop the
+API, migrate a schema, replace binaries, or enable billing.
+
+Install the reviewed helper out of band and coordinate the protocol 8 caller
+before dispatching either deployment workflow. The helper rejects changed base
+hashes, unapproved files and navigation code, symlinks and writable ancestry. It
+retains original files and modes under
+`/var/backups/aalookup-review-pages/<manifest-sha256>/`, verifies public content,
+and rolls back normal failures. A hard termination may require operator recovery
+from the retained record. A successful plan consumes its uploaded archive;
+apply uploads the same candidate again and rechecks every precondition.

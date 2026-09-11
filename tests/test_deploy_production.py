@@ -1,0 +1,172 @@
+"""Exercise the trusted caller and actual workflow packaging without networking."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+import re
+import subprocess
+import tarfile
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("deploy_production", ROOT / "scripts" / "deploy_production.py")
+caller = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(caller)
+BINARIES = (
+    "aalookup-server", "aalookup-backup", "aalookup-database",
+    "aalookup-billing", "aalookup-membership-transition",
+)
+SOURCE_SHA = "e" * 40
+
+
+class PackagingContract(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.outputs = self.root / "target" / "x86_64-unknown-linux-musl" / "release"
+        self.outputs.mkdir(parents=True)
+        for name in BINARIES:
+            (self.outputs / name).write_bytes(f"fixture:{name}".encode())
+        website = self.root / "website" / "dist"
+        website.mkdir(parents=True)
+        (website / "index.html").write_text("<h1>AALookup</h1>")
+        self.commands = self.root / "mock-bin"
+        self.commands.mkdir()
+        # Only the ELF inspection is mocked. The workflow's file checks,
+        # copy, permissions, hashing and tar creation execute on real files.
+        file_probe = self.commands / "file"
+        file_probe.write_text(
+            '#!/bin/sh\ncase "$1" in\n'
+            '  *"${TEST_DYNAMIC_BINARY:-__none__}") echo "dynamically linked";;\n'
+            '  *) echo "statically linked";;\nesac\n'
+        )
+        file_probe.chmod(0o755)
+        # macOS has shasum but does not necessarily have sha256sum.
+        checksum = self.commands / "sha256sum"
+        checksum.write_text(
+            '#!/usr/bin/env python3\nimport hashlib, pathlib, sys\n'
+            'for name in sys.argv[1:]:\n'
+            ' print(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest(), name)\n'
+        )
+        checksum.chmod(0o755)
+
+    def package(self, **extra_env):
+        workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+        step = re.search(
+            r"(?ms)^      - name: Package deployment\n(.*?)(?=^      - name: |\Z)",
+            workflow,
+        )
+        self.assertIsNotNone(step)
+        command = textwrap.dedent(step.group(1).split("        run: |\n", 1)[1])
+        return subprocess.run(
+            ["bash", "-c", command], cwd=self.root, capture_output=True, text=True,
+            env={"PATH": f"{self.commands}{os.pathsep}{os.environ['PATH']}", "COPYFILE_DISABLE": "1",
+                 "SOURCE_SHA": SOURCE_SHA, **extra_env},
+        )
+
+    def test_archive_contains_every_operator_from_the_same_build_output(self):
+        result = self.package()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = self.root / f"aalookup-{SOURCE_SHA}.tar.gz"
+        with tarfile.open(archive) as payload:
+            members = {entry.name.removeprefix("./"): entry for entry in payload if entry.isfile()}
+            self.assertEqual(set(members), {*BINARIES, "website/index.html"})
+            for name in BINARIES:
+                self.assertEqual(payload.extractfile(members[name]).read(), (self.outputs / name).read_bytes())
+                self.assertEqual(members[name].mode & 0o777, 0o755)
+                self.assertIn(f"target/x86_64-unknown-linux-musl/release/{name}", result.stdout)
+        self.assertIn(archive.name, result.stdout)
+
+    def test_missing_empty_or_linked_operator_cannot_publish_an_archive(self):
+        for name in BINARIES[3:]:
+            binary = self.outputs / name
+            for kind in ("missing", "empty", "symlink"):
+                with self.subTest(name=name, kind=kind):
+                    binary.unlink()
+                    if kind == "empty":
+                        binary.touch()
+                    elif kind == "symlink":
+                        binary.symlink_to(self.outputs / "aalookup-server")
+                    result = self.package()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+                    self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
+                    binary.unlink(missing_ok=True)
+                    binary.write_bytes(f"fixture:{name}".encode())
+
+    def test_dynamically_linked_operator_cannot_publish_an_archive(self):
+        result = self.package(TEST_DYNAMIC_BINARY="aalookup-billing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
+
+
+class CallerContract(unittest.TestCase):
+    def run_caller(self, deploy_status=0, **environment):
+        with tempfile.TemporaryDirectory() as directory:
+            inputs = {
+                "source_sha": SOURCE_SHA, "deploy_user": "www", "deploy_host": "example.test",
+                "deploy_port": "2222", "deploy_url": "https://example.test",
+                "private_key": "TEST-ONLY-NOT-A-KEY", "known_hosts": "TEST-ONLY-HOST",
+            }
+            calls = []
+            def run(args, **_kwargs):
+                calls.append(args)
+                result = deploy_status if args[0] == "ssh" and "--protocol" in args[-1] else 0
+                return subprocess.CompletedProcess(args, result)
+            with patch.object(caller, "validated_inputs", return_value=inputs), \
+                    patch.object(caller.Path, "is_file", return_value=True), \
+                    patch.dict(os.environ, {"RUNNER_TEMP": directory, **environment}, clear=True), \
+                    patch.object(caller.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as key_probe, \
+                    patch.object(caller, "run", side_effect=run):
+                result = caller.main()
+            key_probe.assert_called_once()
+            self.assertEqual(list(Path(directory).iterdir()), [], "temporary credential files must be removed")
+            return result, calls
+
+    def test_caller_uses_protocol_eight_with_strict_host_identity(self):
+        result, calls = self.run_caller()
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], "scp")
+        self.assertEqual(calls[1][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --protocol 8 {SOURCE_SHA}")
+        for args in calls:
+            self.assertIn("StrictHostKeyChecking=yes", args)
+            self.assertIn("IdentitiesOnly=yes", args)
+
+    def test_rejected_protocol_is_not_retried_with_a_weaker_contract(self):
+        result, calls = self.run_caller(deploy_status=1)
+        self.assertEqual(result, 1)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[-1][-1], f"rm -f -- /home/www/deploy/aalookup-{SOURCE_SHA}.tar.gz")
+        self.assertEqual(sum("--protocol" in args[-1] for args in calls), 1)
+
+    def test_review_plan_and_apply_name_the_same_pinned_manifest_without_release_fallback(self):
+        manifest = "d" * 64
+        for operation in ("review-pages-plan", "review-pages-apply"):
+            with self.subTest(operation=operation):
+                result, calls = self.run_caller(DEPLOY_OPERATION=operation, REVIEW_MANIFEST_SHA256=manifest)
+                self.assertEqual(result, 0)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[1][-1],
+                                 f"sudo -n -- /usr/local/sbin/aalookup-deploy --{operation} --protocol 8 {SOURCE_SHA} {manifest}")
+                self.assertEqual(calls[0][-1],
+                                 f"www@example.test:/home/www/deploy/aalookup-review-pages-{SOURCE_SHA}-{manifest}.tar.gz")
+
+    def test_unknown_operation_or_unpinned_review_is_rejected_before_network(self):
+        for environment in ({"DEPLOY_OPERATION": "website"}, {"DEPLOY_OPERATION": "review-pages-apply"},
+                            {"DEPLOY_OPERATION": "review-pages-apply", "REVIEW_MANIFEST_SHA256": "bad"}):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
+                    self.assertRaises(caller.Fail):
+                caller.deployment_target(SOURCE_SHA)
+
+
+
+if __name__ == "__main__":
+    unittest.main()
