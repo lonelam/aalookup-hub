@@ -142,9 +142,9 @@ jobs:
 
       - name: Build server
         run: >-
-          cargo build --locked --release -p aalookup-server
+          cargo build --locked --release -p aalookup-server -p aalookup-event-log
           --bin aalookup-server --bin aalookup-backup
-          --bin aalookup-database --bin aalookup-membership-transition
+          --bin aalookup-database --bin aalookup-membership-transition --bin aalookup-event-log
           --target x86_64-unknown-linux-musl
 
       - name: Package deployment
@@ -153,7 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           install -d deploy/website
-          binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition)
+          binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition aalookup-event-log)
           for name in "${binaries[@]}"; do
             binary="target/x86_64-unknown-linux-musl/release/$name"
             if [[ ! -f "$binary" || -L "$binary" || ! -s "$binary" ]]; then
