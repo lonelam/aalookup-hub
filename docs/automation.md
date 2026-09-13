@@ -5,10 +5,44 @@ automation. The application source remains in the private `lonelam/aalookup`
 repository. Each workflow accepts an immutable source commit SHA and checks out
 that exact revision with a read-only credential.
 
+## Choose the operation
+
+All five workflows are manual-only. Merging application or Hub code into `main`
+does not build, publish, approve, or deploy a release.
+
+| Workflow | Use it for | Result |
+| --- | --- | --- |
+| `pre-release.yml` — Build preview | Test an exact pushed source SHA before reserving a stable tag | GitHub-only preview and TestFlight build |
+| `promote-release.yml` — Promote tested release | Reuse the exact accepted preview artifacts | Receipt and isolated draft; operator publication completes the stable candidate |
+| `release.yml` — Build acceptance candidate | Build a stable source tag directly, or use `operation=ios` / `operation=verify` | Stable acceptance candidate, TestFlight-only build, or macOS signing verification |
+| `deploy.yml` — Deploy server and website | Roll out a reviewed server and website revision | Production deployment with protocol and health checks |
+| `deploy-review-pages.yml` — Publish public review pages | Maintain an approved set of public static pages | Plan or apply only that manifest; independent of client releases |
+
+For a client release, prefer **preview → acceptance → promotion of the same
+bytes → distribution approval**. Direct stable builds remain available when no
+preview is being reused. Do not run both paths for the same stable version.
+
+1. Push the source revision with consistent package versions and its changelog.
+2. Build an explicit preview label such as `v1.0.1-rc.1`; retain the successful
+   run ID, release ID, provenance hash, and platform acceptance results.
+3. After acceptance, create the private stable tag at that tested source SHA.
+   For promotion, create the public stable tag at the reviewed Hub promotion
+   commit, and follow the receipt-based publication procedure below.
+4. Approve the exact stable candidate in the website's release gate. Publication
+   alone never advances downloads or updates. After approval, promote that same
+   numeric GitHub release ID by setting `prerelease=false` and `make_latest=true`;
+   keep its tag, release notes, publication time, and all 16 assets unchanged.
+5. If this launch also changes the website or server, deploy the reviewed source
+   with `--client-release` and verify the public feeds. Server-only deployment
+   remains independent of client publication.
+
+The published `v1.0.0` release is complete and immutable. Future changes use a
+new version; never move its tags, replace its assets, or rerun its old publishers.
+
 ## Run the workflows
 
-The workflows are manual-only. They can be started from the Actions page or
-with GitHub CLI after the source revision has been pushed:
+Start from the Actions page or with GitHub CLI after the source revision has
+been pushed. Commands below are templates for a new release:
 
 ```sh
 # Deploy the private repository's pushed HEAD.
@@ -18,17 +52,16 @@ npm --prefix ../aalookup run app:deploy
 npm --prefix ../aalookup run app:deploy -- <40-character-source-sha>
 
 # Build a tagged revision as a GitHub acceptance candidate (not GitHub Latest).
-version=v0.4.0
+version=v1.0.1
 source_sha="$(git -C ../aalookup rev-parse "${version}^{commit}")"
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f version="$version" \
   -f source_sha="$source_sha"
 
 # Send another TestFlight build of an already-released version, without
-# rebuilding or republishing anything else. Each run stamps the built bundles
-# with its own run number, so App Store Connect accepts the upload as a new
-# build of the same version — which is what a rejected or superseded build in
-# review needs.
+# rebuilding or republishing anything else. Each workflow uses its own run
+# number as the build number. Check App Store Connect first: release and preview
+# counters are independent, so a new run does not guarantee a higher build number.
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f operation=ios \
   -f version="$version" \
@@ -52,12 +85,14 @@ gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
 # Or choose an explicit prerelease label whose base matches the source version.
 gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
   -f source_sha="$source_sha" \
-  -f version=v0.3.30-rc.1
+  -f version=v1.0.1-rc.1
 ```
+
+## Candidate publication
 
 `release.yml` publishes a stable `vX.Y.Z` tag as a public GitHub prerelease with
 `make_latest=false`, only after macOS, Windows, Android and iOS builds succeed.
-It no longer refreshes the production mirror or dispatches a website deployment.
+It does not refresh the production mirror or dispatch a website deployment.
 TestFlight upload remains part of the existing iOS testing flow; it does not
 submit an App Store release.
 
@@ -67,6 +102,32 @@ name. Each of the 15 platform artifacts has its exact `name`, `sha256` and `size
 computed after signing/notarization and before upload. The provenance file is
 not self-listed. Only the reviewed installers and metadata are uploaded; private
 source files are never release assets. Existing public assets cannot be replaced.
+
+Both build workflows call `scripts/publish_candidate.py`. A read-only target
+check runs during source resolution, before the platform builds. It rejects an
+already published version, a foreign draft, or a public tag pointing at another
+Hub commit. `operation=ios` and `operation=verify` skip this publication check so
+an existing stable version can still receive a TestFlight build or signing check.
+Source SHAs are required for every operation.
+
+The shared publisher owns the artifact manifest and provenance generation. It
+uploads through a numeric release ID, verifies every asset's exact size and
+SHA-256, and checks the source, workflow, tag, and draft again before publication.
+Retrying an incomplete draft may reuse only identical existing assets and upload
+missing ones. It never deletes or overwrites an asset; rebuilt bytes that differ
+require a new preview version or explicit operator recovery. The final publish
+request keeps `prerelease=true` and `make_latest=false`; fresh reads must confirm
+`immutable=true` and unchanged asset IDs, sizes, hashes, and tag identity.
+
+A failed API call or identity mismatch stops the operation and retains the draft
+for inspection. There are no automatic mutation retries. The early check saves
+build time; it does not replace the final checks. Repository release immutability
+must remain enabled. Historical failed runs and receipts are audit evidence, not
+release steps to replay. A cancellation response alone does not prove a stalled
+run has terminated; preserve the published tag and asset protections.
+
+Maintained builds require the private release scripts and changelog renderer.
+The pre-1.0 inline iOS fallback and empty-changelog fallback have been retired.
 
 Both release workflows include the Windows NSIS installer and its signature,
 plus `AALookup-windows-x86_64-update.tar.gz` and its separate signature. New
@@ -86,7 +147,7 @@ notarization. Privileged permissions or mismatched type bits fail the job.
 The old archive signature is removed, and the final archive is signed with the
 existing Tauri key before Apple verification, upload, and provenance generation.
 
-`pre-release.yml` uses the same strict artifact writer with `--prerelease` to
+`pre-release.yml` invokes the shared publisher with `--prerelease` to
 record its preview tag and exact 15 artifacts. The stable release path rejects
 prerelease labels, and the preview path requires one. A preview's provenance
 does not make it eligible for the website's stable candidate gate.
@@ -169,6 +230,8 @@ public `/api/v1/releases/latest` response against that version and the exact
 server operations omit that optional input and remain independent of client
 releases; this is not a blanket restriction on all website content deployment.
 
+## Server and website deployment
+
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
 The latter identifies the public workflow revision, not the application being
 built. Deployment selection never depends on the private `deploy` branch. The
@@ -204,20 +267,15 @@ The installed helper supports PostgreSQL-only production after SQLite retirement
 and checks unchanged issuer identity and authority when rolling back binaries.
 It never restores live PostgreSQL data during deployment.
 
-This release moves directly from the installed protocol 7 to protocol 10.
-The intermediate development contracts are not deployment stages. The only
-candidate payload contains all five binaries and the website; do not deploy a
-payment-only package first or upgrade through intermediate helpers.
-To activate protocol 10, merge this workflow and caller together, install the
-matching root-owned helper out of band, verify
-`aalookup-deploy --check --protocol 10`, then dispatch the reviewed source SHA.
-The caller runs that same read-only host check before uploading either a server
+Protocol 10 is the installed production contract after the 1.0.0 launch. The
+caller runs `aalookup-deploy --check --protocol 10` before uploading a server
 archive or reviewed pages. A rejected check cleans up local credentials and
-prevents upload and deployment. Pause dispatches during coordination: the helper
-and caller intentionally reject different protocol versions. Merging this
-repository does not install the host helper. Installing the tools does not run
-billing reconciliation, apply an existing-user campaign, or enable sales.
-Before schema migration, also stop independently running maintenance writers.
+prevents upload and deployment. Merging this repository does not install the
+root-owned helper. For a future protocol change, coordinate caller and helper
+updates out of band, pause dispatches while they differ, and verify the matching
+protocol before resuming. Do not replay the completed protocol-7 bootstrap or
+mix intermediate helpers and binary packages. Before a schema migration, stop
+independently running maintenance writers as required by the application runbook.
 
 During protocol-10 deployment of the five matching binaries, the host transaction
 also backs up and removes an installed legacy billing tool. Early rollback
@@ -239,11 +297,10 @@ tests execute the actual workflow shell with fixture binaries, mock only ELF
 inspection, and check archive membership, permissions, missing operators and
 dynamic-link rejection, and exclusion of retired/offline tools. Caller tests
 mock SSH and verify protocol 10 before upload, strict host identity, failed-check
-and failed-deployment cleanup, and no fallback protocol. The 2026-09-13 local
-run passed all 20 tests against protocol 10, including the existing client approval,
-release provenance and reviewed-page checks. It did not contact production or
-dispatch a workflow; a real Actions package and coordinated host installation remain
-release prerequisites.
+and failed-deployment cleanup, and no fallback protocol. Candidate tests exercise
+real fixture bytes with a stateful GitHub boundary, including interrupted uploads,
+asset drift, publication refusal, and immutable completion. These local tests do
+not contact production or publish a release.
 
 `pre-release.yml` accepts an exact source SHA without requiring a private source
 tag. If `version` is omitted, it derives `v<source-base-version>-pre.<12-character-sha>`.
@@ -320,10 +377,11 @@ stapled tickets, Gatekeeper assessments, DMG signatures, and ZIP integrity
 before uploading any macOS artifact.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
-workflow token to request write access. Only the final publish jobs request
-`contents: write`. The macOS jobs request `contents: read` to check out trusted
-Hub packaging tools at the exact workflow commit; other build and
-source-resolution jobs explicitly receive no repository permissions.
+workflow token to request write access. Only publication and promotion preparation jobs request
+`contents: write`. The macOS and source-resolution jobs request `contents: read`
+for trusted Hub packaging and publication preflight at the exact workflow commit;
+other platform build jobs explicitly receive no Hub repository permissions. The
+private source token remains read-only and is never used for Hub publication.
 
 ## Production environment
 
@@ -368,8 +426,8 @@ explicit review plan/apply mode with protocol 10 and the manifest hash. It never
 falls back to full deployment or a weaker protocol. This mode does not stop the
 API, migrate a schema, replace binaries, or enable billing.
 
-Install the reviewed helper out of band and coordinate the protocol 10 caller
-before dispatching either deployment workflow. The helper rejects changed base
+The installed helper and caller must both support protocol 10 before dispatching
+either deployment workflow. The helper rejects changed base
 hashes, unapproved files and navigation code, symlinks and writable ancestry. It
 retains original files and modes under
 `/var/backups/aalookup-review-pages/<manifest-sha256>/`, verifies public content,

@@ -1,6 +1,6 @@
-name: Release
+name: Build acceptance candidate
 
-run-name: ${{ inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || inputs.operation == 'ios' && format('TestFlight build of {0} from {1}', inputs.version, inputs.source_sha) || format('Release {0} from {1}', inputs.version, inputs.source_sha) }}
+run-name: ${{ inputs.operation == 'verify' && format('Verify macOS signing for {0} from {1}', inputs.version, inputs.source_sha) || inputs.operation == 'ios' && format('TestFlight build of {0} from {1}', inputs.version, inputs.source_sha) || format('Acceptance candidate {0} from {1}', inputs.version, inputs.source_sha) }}
 
 on:
   workflow_dispatch:
@@ -20,10 +20,10 @@ on:
           - verify
       source_sha:
         description: Exact lowercase commit SHA from lonelam/aalookup
-        required: false
+        required: true
         type: string
       version:
-        description: Stable release version including the v prefix (for example, v0.3.11)
+        description: Stable release version including the v prefix (for example, v1.0.1)
         required: true
         type: string
 
@@ -38,7 +38,8 @@ jobs:
     name: Resolve private source
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       version: ${{ steps.source.outputs.version }}
@@ -153,9 +154,25 @@ jobs:
             echo "version=$VERSION"
           } >> "$GITHUB_OUTPUT"
 
-      # Rendered here because this is the only job that checks out the private
-      # source, and because a missing entry should fail before the macOS build
-      # rather than after five hours of it.
+      - name: Checkout trusted publication preflight
+        if: ${{ inputs.operation == 'release' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: public-workflow
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check publication target before platform builds
+        if: ${{ inputs.operation == 'release' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.source.outputs.version }}
+          PRIVATE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          PUBLIC_WORKFLOW_SHA: ${{ github.sha }}
+        run: python3 public-workflow/scripts/publish_candidate.py check
+
+      # Reject missing release notes before the platform builds.
       - name: Render release notes from the changelog
         if: ${{ inputs.operation == 'release' }}
         env:
@@ -163,13 +180,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/notes"
-          if [[ ! -f scripts/changelog/render.mjs ]]; then
-            echo "::warning::Source predates the changelog renderer; publishing install notes only."
-            # A blank line rather than an empty file: the upload must have
-            # something to carry, and the staging step tests for content.
-            printf '\n' > "$RUNNER_TEMP/notes/changelog.md"
-            exit 0
-          fi
           node scripts/changelog/render.mjs "${VERSION#v}" > "$RUNNER_TEMP/notes/changelog.md"
           test -s "$RUNNER_TEMP/notes/changelog.md"
 
@@ -677,35 +687,7 @@ jobs:
         run: |
           set -euo pipefail
           export APPLE_API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8"
-          # scripts/release-ios.sh writes the file the Xcode phases read and
-          # then builds. It exists because this job used to write that file
-          # itself, listing the client token and the build number and nothing
-          # else — which is how iOS became the one platform whose builds
-          # compiled no error-reporting DSN, a hole no server-side change can
-          # close. The private repo owns that default, next to the other three
-          # release scripts.
-          #
-          # A re-release of a revision from before that script keeps the old
-          # inline behaviour; it reports no errors, as it did when it shipped.
-          if [[ -x scripts/release-ios.sh ]]; then
-            bash scripts/release-ios.sh
-          else
-            echo "::warning::This source revision predates scripts/release-ios.sh; building without an error-reporting DSN"
-            test -n "$AALOOKUP_CLIENT_TOKEN" || {
-              echo "AALOOKUP_CLIENT_TOKEN is required for guest API access" >&2
-              exit 1
-            }
-            mkdir -p src-tauri/gen/apple/build
-            umask 077
-            escaped=${AALOOKUP_CLIENT_TOKEN//\'/\'\\\'\'}
-            {
-              printf "export AALOOKUP_IOS_BUILD_NUMBER='%s'\n" "$GITHUB_RUN_NUMBER"
-              printf "export AALOOKUP_CLIENT_TOKEN='%s'\n" "$escaped"
-            } > src-tauri/gen/apple/build/xcode-env.sh
-            npx tauri ios build --export-method app-store-connect
-            mkdir -p dist-release
-            cp src-tauri/gen/apple/build/arm64/AALookup.ipa dist-release/AALookup-ios-arm64.ipa
-          fi
+          bash scripts/release-ios.sh
       - name: Upload to TestFlight
         env:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
@@ -751,7 +733,9 @@ jobs:
           fetch-depth: 1
 
       - name: Verify trusted candidate packaging
-        run: python3 -m unittest discover -s public-workflow/tests -p test_release_candidate.py
+        run: |
+          python3 -m unittest discover -s public-workflow/tests -p test_release_candidate.py
+          python3 -m unittest discover -s public-workflow/tests -p test_publish_candidate.py
 
       - name: Download macOS artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -788,55 +772,15 @@ jobs:
       - name: Stage and publish immutable acceptance candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.resolve.outputs.version }}
           PRIVATE_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           PUBLIC_WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          expected=(
-            AALookup-macos-aarch64.dmg
-            AALookup-macos-aarch64.zip
-            AALookup-macos-universal.dmg
-            AALookup-macos-universal.app.tar.gz
-            AALookup-macos-universal.app.tar.gz.sig
-            AALookup-macos-universal.zip
-            AALookup-macos-x86_64.dmg
-            AALookup-macos-x86_64.zip
-            AALookup-windows-x86_64-setup.exe
-            AALookup-windows-x86_64-setup.exe.sig
-            AALookup-windows-x86_64-update.tar.gz
-            AALookup-windows-x86_64-update.tar.gz.sig
-            AALookup-android-aarch64.apk
-            AALookup-android-aarch64.apk.sig
-            AALookup-ios-arm64.ipa
-          )
-          for asset in "${expected[@]}"; do
-            test -f "dist-release/$asset" || {
-              echo "Missing release asset dist-release/$asset" >&2
-              exit 1
-            }
-          done
-          if [[ "$(find dist-release -maxdepth 1 -type f | wc -l | tr -d ' ')" -ne "${#expected[@]}" ]]; then
-            echo "Unexpected files found in dist-release" >&2
-            find dist-release -maxdepth 1 -type f -print >&2
-            exit 1
-          fi
-
-          python3 public-workflow/scripts/release_provenance.py \
-            dist-release "$PRIVATE_SOURCE_SHA" "$PUBLIC_WORKFLOW_SHA" "$VERSION"
-          expected+=(release-provenance.json)
-
-          # The changelog goes above the install block, which keeps the two
-          # source markers at the end of the body where the draft-retry check
-          # below looks for them.
+          # Keep source markers alongside the install notes for release provenance.
           notes="$RUNNER_TEMP/release-notes.md"
-          : > "$notes"
-          if [[ -f release-notes/changelog.md ]] &&
-            grep -q '[^[:space:]]' release-notes/changelog.md; then
-            cat release-notes/changelog.md >> "$notes"
-            echo >> "$notes"
-          fi
+          cat release-notes/changelog.md > "$notes"
+          printf '\n' >> "$notes"
           cat >> "$notes" <<EOF
           ## Acceptance candidate
 
@@ -894,127 +838,5 @@ jobs:
           Public workflow commit: \`${PUBLIC_WORKFLOW_SHA}\`.
           EOF
 
-          # The release-by-tag endpoint intentionally hides unpublished drafts.
-          # Find a retryable draft through the authenticated release listing and
-          # keep its numeric ID for every operation that follows.
-          release_matches="$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              | jq --slurp --arg version "$VERSION" \
-                  '[.[][] | select(.tag_name == $version)]'
-          )"
-          release_count="$(jq --exit-status 'length' <<< "$release_matches")"
-          if (( release_count > 1 )); then
-            echo "Multiple releases unexpectedly use tag $VERSION" >&2
-            exit 1
-          fi
-
-          release_json=""
-          if (( release_count == 1 )); then
-            release_json="$(jq --exit-status '.[0]' <<< "$release_matches")"
-            if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
-              echo "$VERSION is already published and cannot be replaced" >&2
-              exit 1
-            fi
-            source_marker="Private source: \`lonelam/aalookup@${PRIVATE_SOURCE_SHA}\`."
-            existing_notes="$(jq --exit-status --raw-output '.body // ""' <<< "$release_json")"
-            if [[ "$existing_notes" != *"$source_marker"* ]]; then
-              echo "Existing draft $VERSION belongs to a different private source" >&2
-              exit 1
-            fi
-          fi
-
-          tag_json=""
-          tag_lookup_status=0
-          tag_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" 2>/dev/null
-          )" || tag_lookup_status=$?
-          if (( tag_lookup_status == 0 )); then
-            tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_json")"
-            tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_json")"
-            if [[ "$tag_type" != "commit" || "$tag_sha" != "$PUBLIC_WORKFLOW_SHA" ]]; then
-              echo "Existing public tag $VERSION is not owned by this release run" >&2
-              exit 1
-            fi
-          else
-            tag_error_status="$(
-              jq --raw-output '.status // empty' <<< "$tag_json" 2>/dev/null || true
-            )"
-            if [[ "$tag_error_status" != "404" ]]; then
-              echo "Could not inspect public tag $VERSION" >&2
-              printf '%s\n' "$tag_json" >&2
-              exit "$tag_lookup_status"
-            fi
-            tag_json=""
-            if [[ -n "$release_json" ]]; then
-              echo "Draft release $VERSION has lost its public tag" >&2
-              exit 1
-            fi
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${VERSION}" \
-              -f sha="$PUBLIC_WORKFLOW_SHA" >/dev/null
-          fi
-
-          if [[ -z "$release_json" ]]; then
-            release_json="$(
-              gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
-                --raw-field tag_name="$VERSION" \
-                --raw-field target_commitish="$PUBLIC_WORKFLOW_SHA" \
-                --raw-field name="$VERSION" \
-                --raw-field body="$(< "$notes")" \
-                -F draft=true \
-                -F prerelease=true \
-                --raw-field make_latest=false
-            )"
-          else
-            release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
-            release_json="$(
-              gh api --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-                --raw-field name="$VERSION" \
-                --raw-field body="$(< "$notes")" \
-                -F draft=true \
-                -F prerelease=true \
-                --raw-field make_latest=false
-            )"
-          fi
-          release_id="$(jq --exit-status --raw-output '.id' <<< "$release_json")"
-
-          # Clobber is legal only while the release is an unpublished draft. It
-          # makes a failed upload retryable without ever rewriting a public asset.
-          gh release upload "$VERSION" dist-release/* --clobber
-
-          release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
-          )"
-          if [[ "$(jq --exit-status --raw-output '.draft' <<< "$release_json")" != "true" ]]; then
-            echo "$VERSION became public before its assets were verified" >&2
-            exit 1
-          fi
-          assets_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100"
-          )"
-          expected_manifest="$(printf '%s\n' "${expected[@]}" | sort)"
-          actual_manifest="$(
-            jq --exit-status --raw-output '
-              if all(.[]; .size > 0)
-              then sort_by(.name) | .[].name
-              else error("release contains an empty asset")
-              end
-            ' <<< "$assets_json"
-          )"
-          if [[ "$actual_manifest" != "$expected_manifest" ]]; then
-            echo "Draft release assets do not match the expected immutable manifest" >&2
-            diff \
-              <(printf '%s\n' "$expected_manifest") \
-              <(printf '%s\n' "$actual_manifest") >&2 || true
-            exit 1
-          fi
-
-          # Publishing by numeric ID works for drafts; the by-tag endpoint does
-          # not expose them until after this transition.
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F draft=false \
-            -F prerelease=true \
-            --raw-field make_latest=false >/dev/null
-          echo "Candidate published. Acceptance and website distribution remain separate."
+          python3 public-workflow/scripts/publish_candidate.py publish \
+            --directory dist-release --notes "$notes"
