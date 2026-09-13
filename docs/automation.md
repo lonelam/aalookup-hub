@@ -76,6 +76,16 @@ enforces a single executable with its VC runtime linked statically. macOS keeps
 the universal signed bundle and its signed update helper. Installer artifacts
 remain available for manual installation.
 
+The macOS jobs normalize the updater tar headers before signing the final
+archive again. Tauri can include Unix file-type bits in the mode field; the
+staged updater accepts permission bits only. The trusted Hub packaging script
+removes only matching type bits after checking paths, entry types, links,
+permissions, limits, and the update manifest. It verifies every bundle file's
+hash and metadata across the rewrite, preserving the Apple signatures and
+notarization. Privileged permissions or mismatched type bits fail the job.
+The old archive signature is removed, and the final archive is signed with the
+existing Tauri key before Apple verification, upload, and provenance generation.
+
 `pre-release.yml` uses the same strict artifact writer with `--prerelease` to
 record its preview tag and exact 15 artifacts. The stable release path rejects
 prerelease labels, and the preview path requires one. A preview's provenance
@@ -244,8 +254,9 @@ before uploading any macOS artifact.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
 workflow token to request write access. Only the final publish jobs request
-`contents: write`; build and source-resolution jobs explicitly receive no
-repository permissions.
+`contents: write`. The macOS jobs request `contents: read` to check out trusted
+Hub packaging tools at the exact workflow commit; other build and
+source-resolution jobs explicitly receive no repository permissions.
 
 ## Production environment
 
