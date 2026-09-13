@@ -86,7 +86,7 @@ workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
 `scripts/deploy_production.py` is that helper's caller: it validates the inputs,
 copies the archive to the production host, and invokes the root-owned installer
-there as `aalookup-deploy --protocol 9 <sha>`. Nothing on this side touches
+there as `aalookup-deploy --protocol 10 <sha>`. Nothing on this side touches
 production state. The installer itself lives in the private source repository at
 `server/aalookup-deploy` and is installed on the host out of band, so this
 workflow can ship a bad binary — which the installer will roll back — but never
@@ -94,11 +94,15 @@ a bad deployment procedure. Both are Python; the protocol number is what makes a
 mismatch between them fail closed instead of half-running.
 The server quality gate runs the source repository's isolated PostgreSQL 17
 launcher, including matching PostgreSQL client tools and automatic fixture cleanup.
-Protocol 9 explicitly builds and packages `aalookup-server`, `aalookup-backup`,
-`aalookup-database`, and `aalookup-membership-transition` from the same source
-revision and `x86_64-unknown-linux-musl` release output. Each must be a regular,
-nonempty, statically linked binary; the workflow logs each SHA-256 and the final
-archive SHA-256. Payment operations now use the existing daemon through Admin
+Protocol 10 explicitly builds and packages `aalookup-server`, `aalookup-backup`,
+`aalookup-database`, `aalookup-membership-transition`, and `aalookup-event-log`
+from the same source revision and `x86_64-unknown-linux-musl` release output.
+Each must be a regular, nonempty, statically linked binary; the workflow logs
+each SHA-256 and the final
+archive SHA-256. The shared event-log reader is installed at
+`/usr/local/libexec/aalookup-event-log` for authorized SSH log import. This requires
+the matching analytics implementation and protocol-10 helper in the private source
+repository. Payment operations now use the existing daemon through Admin
 APIs. The retired `aalookup-billing` and the offline `aalookup-billing-catalog`
 are excluded even if they exist in the local Cargo output directory. An older
 source SHA lacking a required binary cannot produce this package; never mix
@@ -107,10 +111,13 @@ The installed helper supports PostgreSQL-only production after SQLite retirement
 and checks unchanged issuer identity and authority when rolling back binaries.
 It never restores live PostgreSQL data during deployment.
 
-Protocols 7 (three binaries) and 8 (five binaries) are historical contracts.
-To activate protocol 9, merge this workflow and caller together, install the
+This release moves directly from the installed protocol 7 to protocol 10.
+The intermediate development contracts are not deployment stages. The only
+candidate payload contains all five binaries and the website; do not deploy a
+payment-only package first or upgrade through intermediate helpers.
+To activate protocol 10, merge this workflow and caller together, install the
 matching root-owned helper out of band, verify
-`aalookup-deploy --check --protocol 9`, then dispatch the reviewed source SHA.
+`aalookup-deploy --check --protocol 10`, then dispatch the reviewed source SHA.
 The caller runs that same read-only host check before uploading either a server
 archive or reviewed pages. A rejected check cleans up local credentials and
 prevents upload and deployment. Pause dispatches during coordination: the helper
@@ -119,7 +126,7 @@ repository does not install the host helper. Installing the tools does not run
 billing reconciliation, apply an existing-user campaign, or enable sales.
 Before schema migration, also stop independently running maintenance writers.
 
-During protocol-9 deployment of the four matching binaries, the host transaction
+During protocol-10 deployment of the five matching binaries, the host transaction
 also backs up and removes an installed legacy billing tool. Early rollback
 restores the old tool and prior companions, or removes tools first installed by
 the failed attempt.
@@ -138,11 +145,11 @@ The workflow runs this gate before invoking the deployment caller. Packaging
 tests execute the actual workflow shell with fixture binaries, mock only ELF
 inspection, and check archive membership, permissions, missing operators and
 dynamic-link rejection, and exclusion of retired/offline tools. Caller tests
-mock SSH and verify protocol 9 before upload, strict host identity, failed-check
-and failed-deployment cleanup, and no fallback protocol. The 2026-09-12 local
-run passed all 20 tests, including the existing client approval, release
-provenance and reviewed-page checks. It did not contact production or dispatch
-a workflow; a real Actions package and coordinated host installation remain
+mock SSH and verify protocol 10 before upload, strict host identity, failed-check
+and failed-deployment cleanup, and no fallback protocol. The 2026-09-13 local
+run passed all 20 tests against protocol 10, including the existing client approval,
+release provenance and reviewed-page checks. It did not contact production or
+dispatch a workflow; a real Actions package and coordinated host installation remain
 release prerequisites.
 
 `pre-release.yml` accepts an exact source SHA without requiring a private source
@@ -263,11 +270,11 @@ The private source's public-page builder runs without deployment credentials.
 The trusted Hub packager then verifies the manifest hash and packages only the
 listed public HTML and fixed navigation script; local review metadata and all
 other assets are excluded. The caller invokes the existing root-owned helper's
-explicit review plan/apply mode with protocol 9 and the manifest hash. It never
+explicit review plan/apply mode with protocol 10 and the manifest hash. It never
 falls back to full deployment or a weaker protocol. This mode does not stop the
 API, migrate a schema, replace binaries, or enable billing.
 
-Install the reviewed helper out of band and coordinate the protocol 9 caller
+Install the reviewed helper out of band and coordinate the protocol 10 caller
 before dispatching either deployment workflow. The helper rejects changed base
 hashes, unapproved files and navigation code, symlinks and writable ancestry. It
 retains original files and modes under

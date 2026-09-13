@@ -110,12 +110,8 @@ jobs:
       # beside it in the source repository rather than in the architecture
       # glob, so without naming them here nothing in this job covers the thing
       # doing the installing.
-      #
-      # --if-present because this job checks out whichever source revision was
-      # asked for, including one older than the script: a rollback to an
-      # earlier release must not fail on a missing test.
       - name: Verify the production deploy helper
-        run: npm run server:deploy:test --if-present
+        run: npm run server:deploy:test
 
       - name: Build website
         env:
@@ -142,9 +138,9 @@ jobs:
 
       - name: Build server
         run: >-
-          cargo build --locked --release -p aalookup-server
+          cargo build --locked --release -p aalookup-server -p aalookup-event-log
           --bin aalookup-server --bin aalookup-backup
-          --bin aalookup-database --bin aalookup-membership-transition
+          --bin aalookup-database --bin aalookup-membership-transition --bin aalookup-event-log
           --target x86_64-unknown-linux-musl
 
       - name: Package deployment
@@ -153,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           install -d deploy/website
-          binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition)
+          binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition aalookup-event-log)
           for name in "${binaries[@]}"; do
             binary="target/x86_64-unknown-linux-musl/release/$name"
             if [[ ! -f "$binary" || -L "$binary" || ! -s "$binary" ]]; then
