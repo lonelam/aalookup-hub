@@ -95,7 +95,7 @@ jobs:
       - name: Install musl build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes file musl-tools openssl
+          sudo apt-get install --yes binutils file musl-tools openssl
 
       - name: Install website dependencies
         run: npm ci
@@ -158,11 +158,29 @@ jobs:
             fi
             file "$binary" | tee /dev/stderr \
               | grep --quiet --extended-regexp "static(ally|-pie)? linked"
-            sha256sum "$binary"
             install -m 0755 "$binary" "deploy/$name"
+            # Linux keeps the workspace's line tables inside each ELF. Strip
+            # only the shipping copy; retain the original build for diagnostics.
+            strip --strip-debug "deploy/$name"
+            printf '%s build bytes: ' "$name"
+            wc -c < "$binary"
+            printf '%s deployment bytes: ' "$name"
+            wc -c < "deploy/$name"
+            sha256sum "deploy/$name"
           done
           cp -a website/dist/. deploy/website/
           tar -C deploy -czf "aalookup-${SOURCE_SHA}.tar.gz" .
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+          archive = Path(f"aalookup-{os.environ['SOURCE_SHA']}.tar.gz")
+          files = [entry for entry in Path("deploy").rglob("*") if entry.is_file()]
+          packed = archive.stat().st_size
+          unpacked = sum(entry.stat().st_size for entry in files)
+          print(f"Deployment archive bytes: {packed}; expanded file bytes: {unpacked}")
+          if packed > 104857600 or unpacked > 536870912:
+              raise SystemExit("Deployment exceeds the host's 100 MiB archive or 512 MiB expanded limit")
+          PY
           sha256sum "aalookup-${SOURCE_SHA}.tar.gz"
 
       - name: Checkout trusted deployment tooling

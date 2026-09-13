@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -33,13 +34,14 @@ class PackagingContract(unittest.TestCase):
         self.outputs = self.root / "target" / "x86_64-unknown-linux-musl" / "release"
         self.outputs.mkdir(parents=True)
         for name in BINARIES:
-            (self.outputs / name).write_bytes(f"fixture:{name}".encode())
+            (self.outputs / name).write_bytes(f"fixture:{name}|debug".encode())
         website = self.root / "website" / "dist"
         website.mkdir(parents=True)
         (website / "index.html").write_text("<h1>AALookup</h1>")
         self.commands = self.root / "mock-bin"
         self.commands.mkdir()
-        # Only the ELF inspection is mocked. The workflow's file checks,
+        # Mock ELF inspection and debug removal for portable contract tests.
+        # The workflow's file checks,
         # copy, permissions, hashing and tar creation execute on real files.
         file_probe = self.commands / "file"
         file_probe.write_text(
@@ -48,6 +50,15 @@ class PackagingContract(unittest.TestCase):
             '  *) echo "statically linked";;\nesac\n'
         )
         file_probe.chmod(0o755)
+        stripper = self.commands / "strip"
+        stripper.write_text(
+            '#!/usr/bin/env python3\nimport os, pathlib, sys\n'
+            'assert sys.argv[1] == "--strip-debug"\n'
+            'if os.environ.get("TEST_STRIP_FAILURE"): sys.exit(1)\n'
+            'p = pathlib.Path(sys.argv[2])\n'
+            'p.write_bytes(p.read_bytes().removesuffix(b"|debug"))\n'
+        )
+        stripper.chmod(0o755)
         # macOS has shasum but does not necessarily have sha256sum.
         checksum = self.commands / "sha256sum"
         checksum.write_text(
@@ -57,7 +68,7 @@ class PackagingContract(unittest.TestCase):
         )
         checksum.chmod(0o755)
 
-    def package(self, **extra_env):
+    def package(self, archive_limit=None, expanded_limit=None, **extra_env):
         workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
         step = re.search(
             r"(?ms)^      - name: Package deployment\n(.*?)(?=^      - name: |\Z)",
@@ -65,6 +76,10 @@ class PackagingContract(unittest.TestCase):
         )
         self.assertIsNotNone(step)
         command = textwrap.dedent(step.group(1).split("        run: |\n", 1)[1])
+        if archive_limit is not None:
+            command = command.replace("packed > 104857600", f"packed > {archive_limit}")
+        if expanded_limit is not None:
+            command = command.replace("unpacked > 536870912", f"unpacked > {expanded_limit}")
         return subprocess.run(
             ["bash", "-c", command], cwd=self.root, capture_output=True, text=True,
             env={"PATH": f"{self.commands}{os.pathsep}{os.environ['PATH']}", "COPYFILE_DISABLE": "1",
@@ -95,10 +110,26 @@ class PackagingContract(unittest.TestCase):
             members = {entry.name.removeprefix("./"): entry for entry in payload if entry.isfile()}
             self.assertEqual(set(members), {*BINARIES, "website/index.html"})
             for name in BINARIES:
-                self.assertEqual(payload.extractfile(members[name]).read(), (self.outputs / name).read_bytes())
+                shipped = f"fixture:{name}".encode()
+                self.assertEqual(payload.extractfile(members[name]).read(), shipped)
+                self.assertEqual((self.outputs / name).read_bytes(), shipped + b"|debug")
                 self.assertEqual(members[name].mode & 0o777, 0o755)
-                self.assertIn(f"target/x86_64-unknown-linux-musl/release/{name}", result.stdout)
+                self.assertRegex(result.stdout, hashlib.sha256(shipped).hexdigest() + rf"\s+deploy/{name}")
         self.assertIn(archive.name, result.stdout)
+
+    def test_debug_removal_failure_stops_packaging_without_changing_build_output(self):
+        result = self.package(TEST_STRIP_FAILURE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
+        for name in BINARIES:
+            self.assertTrue((self.outputs / name).read_bytes().endswith(b"|debug"))
+
+    def test_archive_and_expanded_size_limits_fail_before_upload(self):
+        for limits in ({"archive_limit": 1}, {"expanded_limit": 1}):
+            with self.subTest(limits=limits):
+                result = self.package(**limits)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Deployment exceeds the host's", result.stderr)
 
     def test_missing_empty_or_linked_operator_cannot_publish_an_archive(self):
         for name in BINARIES:

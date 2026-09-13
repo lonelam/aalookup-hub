@@ -110,9 +110,12 @@ launcher, including matching PostgreSQL client tools and automatic fixture clean
 Protocol 10 explicitly builds and packages `aalookup-server`, `aalookup-backup`,
 `aalookup-database`, `aalookup-membership-transition`, and `aalookup-event-log`
 from the same source revision and `x86_64-unknown-linux-musl` release output.
-Each must be a regular, nonempty, statically linked binary; the workflow logs
-each SHA-256 and the final
-archive SHA-256. The shared event-log reader is installed at
+Each must be a regular, nonempty, statically linked binary. The workflow copies
+each ELF into the deployment directory and removes only its debug information,
+preserving the original Cargo build output. It logs each original and shipped
+byte size, each shipped SHA-256, and the final archive SHA-256. Before upload,
+the package must satisfy the host's existing 100 MiB compressed and 512 MiB
+expanded limits. The shared event-log reader is installed at
 `/usr/local/libexec/aalookup-event-log` for authorized SSH log import. This requires
 the matching analytics implementation and protocol-10 helper in the private source
 repository. Payment operations now use the existing daemon through Admin
