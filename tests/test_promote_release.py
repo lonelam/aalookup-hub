@@ -360,6 +360,33 @@ class PromotionTests(unittest.TestCase):
         for forbidden in ("cargo ", "npm ", "signer sign", "TAURI_SIGNING", "ASC_API", "DEPLOY_", "gh release upload"):
             self.assertNotIn(forbidden, workflow)
 
+    def test_release_notes_preserve_platform_restrictions_and_exclude_internal_entries(self):
+        api = FakeGitHub()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "src-tauri").mkdir()
+            (root / "changelog").mkdir()
+            for path in (root / "package.json", root / "src-tauri/tauri.conf.json"):
+                path.write_text(json.dumps({"version": "1.0.0"}))
+            (root / "src-tauri/Cargo.toml").write_text('[package]\nversion = "1.0.0"\n')
+            entry = {"version": "1.0.0", "headline": {"en": "Release", "zh-CN": "发布"},
+                     "changes": [{"platforms": ["macos"], "summary": {"en": "Experimental screen OCR.", "zh-CN": "实验性屏幕OCR。"}},
+                                 {"summary": {"en": "All-platform change.", "zh-CN": "全平台改进。"}}],
+                     "internal": [{"summary": "Private operational details"}]}
+            path = root / "changelog/1.0.0.json"
+            path.write_text(json.dumps(entry))
+            with patch.object(promotion.subprocess, "check_output", return_value="a" * 40 + "\n"):
+                notes, actual_sha = promotion.source_notes(root, api.config)
+                self.assertIn("- **macOS** — Experimental screen OCR.", notes)
+                self.assertIn("- **macOS** — 实验性屏幕OCR。", notes)
+                self.assertIn("- All-platform change.", notes)
+                self.assertNotIn("Private operational details", notes)
+                self.assertEqual(actual_sha, promotion.sha256(path))
+                entry["changes"][0]["platforms"] = ["unknown"]
+                path.write_text(json.dumps(entry))
+                with self.assertRaisesRegex(ValueError, "platform restriction"):
+                    promotion.source_notes(root, api.config)
+
 
 if __name__ == "__main__":
     unittest.main()

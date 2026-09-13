@@ -234,7 +234,13 @@ def source_notes(directory, config):
         for change in data["changes"]:
             summary = change["summary"][locale]
             require(isinstance(summary, str) and summary.strip(), "changelog summary missing")
-            lines.append("- " + summary)
+            platforms = change.get("platforms")
+            prefix = ""
+            if platforms is not None:
+                labels = {"macos": "macOS", "windows": "Windows"}
+                require(isinstance(platforms, list) and platforms and all(platform in labels for platform in platforms) and len(set(platforms)) == len(platforms), "invalid changelog platform restriction")
+                prefix = "**" + " / ".join(labels[platform] for platform in platforms) + "** — "
+            lines.append("- " + prefix + summary)
         lines.append("")
     return "\n".join(lines), sha256(changelog)
 
