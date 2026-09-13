@@ -112,7 +112,7 @@ class GitHub:
 
     def download_file(self, path, destination, expected_size, expected_digest, *, artifact=False):
         url = "https://api.github.com/" + path
-        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/octet-stream",
+        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json" if artifact else "application/octet-stream",
                    "X-GitHub-Api-Version": "2026-03-10"}
         try:
             response = self.opener.open(Request(url, headers=headers), timeout=60)

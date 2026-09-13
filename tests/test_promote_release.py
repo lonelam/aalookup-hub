@@ -287,6 +287,7 @@ class PromotionTests(unittest.TestCase):
                 calls.append(request)
                 if len(calls) == 1:
                     self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+                    self.assertEqual(request.get_header("Accept"), "application/octet-stream")
                     raise HTTPError(request.full_url, 302, "redirect", {"Location": "https://release-assets.githubusercontent.com/signed?secret=ephemeral"}, None)
                 self.assertIsNone(request.get_header("Authorization"))
                 return response
@@ -298,6 +299,35 @@ class PromotionTests(unittest.TestCase):
             bad.status = 200
             with patch.object(api.opener, "open", return_value=bad), self.assertRaisesRegex(ValueError, "limit"):
                 api.download(asset, Path(temporary) / "bad.bin")
+
+    def test_actions_artifact_download_accepts_json_and_strips_token_on_signed_redirect(self):
+        api = promotion.GitHub("test-token")
+        content = b"receipt archive bytes"
+        path = f"repos/{promotion.REPO}/actions/artifacts/99/zip"
+        signed_url = "https://production.blob.core.windows.net/receipt.zip?secret=ephemeral"
+        response = io.BytesIO(content)
+        response.status = 200
+        calls = []
+
+        def opened(request, timeout):
+            calls.append(request)
+            self.assertEqual(timeout, 60)
+            if len(calls) == 1:
+                self.assertEqual(request.full_url, "https://api.github.com/" + path)
+                self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+                self.assertEqual(request.get_header("Accept"), "application/json")
+                self.assertEqual(request.get_header("X-github-api-version"), "2026-03-10")
+                raise HTTPError(request.full_url, 302, "redirect", {"Location": signed_url}, None)
+            self.assertEqual(request.full_url, signed_url)
+            self.assertEqual(request.header_items(), [])
+            return response
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "receipt.zip"
+            with patch.object(api.opener, "open", side_effect=opened):
+                api.download_file(path, output, len(content), "sha256:" + digest(content), artifact=True)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(output.read_bytes(), content)
 
     def test_publish_revalidates_prepared_asset_ids_and_pinned_receipt(self):
         api = FakeGitHub()
