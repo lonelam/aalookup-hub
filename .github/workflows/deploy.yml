@@ -129,6 +129,9 @@ jobs:
           fi
           npm run site:build
 
+      - name: Verify website rendering and runtime
+        run: npm run site:test
+
       # The launcher owns an isolated PostgreSQL 17 container, TLS credentials,
       # per-test databases, and matching pg_dump/pg_restore client wrappers.
       - name: Test server against PostgreSQL 17
@@ -148,6 +151,18 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
+          if [[ ! -d website/dist/.ssr || -L website/dist/.ssr ]]; then
+            echo "Missing regular website SSR runtime directory" >&2
+            exit 1
+          fi
+          website_files=(index.html .ssr/server.mjs .ssr/entry-server.mjs .ssr/render.mjs .ssr/template.html)
+          for name in "${website_files[@]}"; do
+            website_file="website/dist/$name"
+            if [[ ! -f "$website_file" || -L "$website_file" || ! -s "$website_file" ]]; then
+              echo "Missing regular nonempty website runtime file: $name" >&2
+              exit 1
+            fi
+          done
           install -d deploy/website
           binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition aalookup-event-log)
           for name in "${binaries[@]}"; do

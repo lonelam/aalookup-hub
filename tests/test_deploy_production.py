@@ -24,6 +24,10 @@ BINARIES = (
     "aalookup-membership-transition", "aalookup-event-log",
 )
 SOURCE_SHA = "e" * 40
+WEBSITE_FILES = (
+    "index.html", ".ssr/server.mjs", ".ssr/entry-server.mjs",
+    ".ssr/render.mjs", ".ssr/template.html",
+)
 
 
 class PackagingContract(unittest.TestCase):
@@ -36,8 +40,9 @@ class PackagingContract(unittest.TestCase):
         for name in BINARIES:
             (self.outputs / name).write_bytes(f"fixture:{name}|debug".encode())
         website = self.root / "website" / "dist"
-        website.mkdir(parents=True)
-        (website / "index.html").write_text("<h1>AALookup</h1>")
+        (website / ".ssr").mkdir(parents=True)
+        for name in WEBSITE_FILES:
+            (website / name).write_text(f"fixture:{name}")
         self.commands = self.root / "mock-bin"
         self.commands.mkdir()
         # Mock ELF inspection and debug removal for portable contract tests.
@@ -98,6 +103,7 @@ class PackagingContract(unittest.TestCase):
         self.assertNotIn("--bins", build)
         self.assertNotIn("aalookup-billing", build + package)
         self.assertIn("run: npm run server:deploy:test\n", source)
+        self.assertIn("run: npm run site:test\n", source)
 
     def test_archive_contains_every_operator_from_the_same_build_output(self):
         # Other local Cargo outputs must not widen the production payload.
@@ -108,7 +114,10 @@ class PackagingContract(unittest.TestCase):
         archive = self.root / f"aalookup-{SOURCE_SHA}.tar.gz"
         with tarfile.open(archive) as payload:
             members = {entry.name.removeprefix("./"): entry for entry in payload if entry.isfile()}
-            self.assertEqual(set(members), {*BINARIES, "website/index.html"})
+            self.assertEqual(set(members), {*BINARIES, *("website/" + name for name in WEBSITE_FILES)})
+            for name in WEBSITE_FILES:
+                self.assertEqual(payload.extractfile(members["website/" + name]).read(),
+                                 f"fixture:{name}".encode())
             for name in BINARIES:
                 shipped = f"fixture:{name}".encode()
                 self.assertEqual(payload.extractfile(members[name]).read(), shipped)
@@ -155,6 +164,33 @@ class PackagingContract(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
 
+    def test_missing_empty_or_linked_website_runtime_cannot_publish_an_archive(self):
+        website = self.root / "website" / "dist"
+        for name in WEBSITE_FILES:
+            runtime_file = website / name
+            for kind in ("missing", "empty", "symlink"):
+                with self.subTest(name=name, kind=kind):
+                    runtime_file.unlink()
+                    if kind == "empty":
+                        runtime_file.touch()
+                    elif kind == "symlink":
+                        runtime_file.symlink_to(self.outputs / "aalookup-server")
+                    result = self.package()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+                    self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
+                    runtime_file.unlink(missing_ok=True)
+                    runtime_file.write_text(f"fixture:{name}")
+
+    def test_linked_website_runtime_directory_cannot_publish_an_archive(self):
+        website = self.root / "website" / "dist"
+        (website / ".ssr").rename(website / "runtime")
+        (website / ".ssr").symlink_to(website / "runtime", target_is_directory=True)
+        result = self.package()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing regular website SSR runtime directory", result.stderr)
+        self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
+
 
 class CallerContract(unittest.TestCase):
     def run_caller(self, deploy_status=0, check_status=0, **environment):
@@ -186,13 +222,13 @@ class CallerContract(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [], "temporary credential files must be removed")
             return result, calls
 
-    def test_caller_checks_protocol_ten_before_upload_with_strict_host_identity(self):
+    def test_caller_checks_protocol_eleven_before_upload_with_strict_host_identity(self):
         result, calls = self.run_caller()
-        self.assertEqual(caller.PROTOCOL, "10")
+        self.assertEqual(caller.PROTOCOL, "11")
         self.assertEqual(result, 0)
         self.assertEqual([args[0] for args in calls], ["ssh", "scp", "ssh"])
-        self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 10")
-        self.assertEqual(calls[2][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --protocol 10 {SOURCE_SHA}")
+        self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 11")
+        self.assertEqual(calls[2][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --protocol 11 {SOURCE_SHA}")
         for args in calls:
             self.assertIn("StrictHostKeyChecking=yes", args)
             self.assertIn("IdentitiesOnly=yes", args)
@@ -205,7 +241,7 @@ class CallerContract(unittest.TestCase):
                 self.assertIsInstance(result, caller.Fail)
                 self.assertEqual(str(result), "host protocol check failed")
                 self.assertEqual(len(calls), 1)
-                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 10")
+                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 11")
 
     def test_failed_deployment_cleans_archive_without_a_weaker_protocol_retry(self):
         result, calls = self.run_caller(deploy_status=1)
@@ -221,9 +257,9 @@ class CallerContract(unittest.TestCase):
                 result, calls = self.run_caller(DEPLOY_OPERATION=operation, REVIEW_MANIFEST_SHA256=manifest)
                 self.assertEqual(result, 0)
                 self.assertEqual(len(calls), 3)
-                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 10")
+                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 11")
                 self.assertEqual(calls[2][-1],
-                                 f"sudo -n -- /usr/local/sbin/aalookup-deploy --{operation} --protocol 10 {SOURCE_SHA} {manifest}")
+                                 f"sudo -n -- /usr/local/sbin/aalookup-deploy --{operation} --protocol 11 {SOURCE_SHA} {manifest}")
                 self.assertEqual(calls[1][-1],
                                  f"www@example.test:/home/www/deploy/aalookup-review-pages-{SOURCE_SHA}-{manifest}.tar.gz")
 

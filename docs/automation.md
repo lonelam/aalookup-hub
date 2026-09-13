@@ -239,7 +239,7 @@ workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
 `scripts/deploy_production.py` is that helper's caller: it validates the inputs,
 copies the archive to the production host, and invokes the root-owned installer
-there as `aalookup-deploy --protocol 10 <sha>`. Nothing on this side touches
+there as `aalookup-deploy --protocol 11 <sha>`. Nothing on this side touches
 production state. The installer itself lives in the private source repository at
 `server/aalookup-deploy` and is installed on the host out of band, so this
 workflow can ship a bad binary — which the installer will roll back — but never
@@ -247,7 +247,7 @@ a bad deployment procedure. Both are Python; the protocol number is what makes a
 mismatch between them fail closed instead of half-running.
 The server quality gate runs the source repository's isolated PostgreSQL 17
 launcher, including matching PostgreSQL client tools and automatic fixture cleanup.
-Protocol 10 explicitly builds and packages `aalookup-server`, `aalookup-backup`,
+Protocol 11 explicitly builds and packages `aalookup-server`, `aalookup-backup`,
 `aalookup-database`, `aalookup-membership-transition`, and `aalookup-event-log`
 from the same source revision and `x86_64-unknown-linux-musl` release output.
 Each must be a regular, nonempty, statically linked binary. The workflow copies
@@ -257,7 +257,7 @@ byte size, each shipped SHA-256, and the final archive SHA-256. Before upload,
 the package must satisfy the host's existing 100 MiB compressed and 512 MiB
 expanded limits. The shared event-log reader is installed at
 `/usr/local/libexec/aalookup-event-log` for authorized SSH log import. This requires
-the matching analytics implementation and protocol-10 helper in the private source
+the matching analytics implementation and protocol-11 helper in the private source
 repository. Payment operations now use the existing daemon through Admin
 APIs. The retired `aalookup-billing` and the offline `aalookup-billing-catalog`
 are excluded even if they exist in the local Cargo output directory. An older
@@ -267,8 +267,23 @@ The installed helper supports PostgreSQL-only production after SQLite retirement
 and checks unchanged issuer identity and authority when rolling back binaries.
 It never restores live PostgreSQL data during deployment.
 
-Protocol 10 is the installed production contract after the 1.0.0 launch. The
-caller runs `aalookup-deploy --check --protocol 10` before uploading a server
+Protocol 11 adds the Node website runtime to the five-binary contract. The
+website build includes public HTML/assets and the bundled private
+`.ssr/server.mjs`, `.ssr/entry-server.mjs`, `.ssr/render.mjs`, and
+`.ssr/template.html`. The workflow runs `npm run site:test` after building and
+rejects missing, empty, or linked runtime files before creating an archive.
+Packaging still copies all of `website/dist`, including `.ssr`; the host does
+not install npm packages or run a build. The helper restarts
+`aalookup-website.service`, verifies its loopback health and homepage, and
+coordinates website rollback with service state. Caddy sends website requests
+to `127.0.0.1:1431`; private runtime files must never be publicly served.
+The Caddy configuration, Node unit, and first-cutover runbook live in
+`server-maintaining/nodes/hk-app/install/website/`. Install the supported Node
+runtime, unit, and matching helper before dispatching protocol 11; switch Caddy
+only after the first SSR artifact is healthy. An initial rollback to a
+static-only website also requires restoring the saved static Caddy route.
+
+The caller runs `aalookup-deploy --check --protocol 11` before uploading a server
 archive or reviewed pages. A rejected check cleans up local credentials and
 prevents upload and deployment. Merging this repository does not install the
 root-owned helper. For a future protocol change, coordinate caller and helper
@@ -277,7 +292,7 @@ protocol before resuming. Do not replay the completed protocol-7 bootstrap or
 mix intermediate helpers and binary packages. Before a schema migration, stop
 independently running maintenance writers as required by the application runbook.
 
-During protocol-10 deployment of the five matching binaries, the host transaction
+During deployment of the five matching binaries, the host transaction
 also backs up and removes an installed legacy billing tool. Early rollback
 restores the old tool and prior companions, or removes tools first installed by
 the failed attempt.
@@ -295,8 +310,9 @@ python3 -m unittest discover -s tests
 The workflow runs this gate before invoking the deployment caller. Packaging
 tests execute the actual workflow shell with fixture binaries, mock only ELF
 inspection, and check archive membership, permissions, missing operators and
-dynamic-link rejection, and exclusion of retired/offline tools. Caller tests
-mock SSH and verify protocol 10 before upload, strict host identity, failed-check
+dynamic-link rejection, inclusion of the complete SSR runtime, refusal of an
+incomplete runtime, and exclusion of retired/offline tools. Caller tests
+mock SSH and verify protocol 11 before upload, strict host identity, failed-check
 and failed-deployment cleanup, and no fallback protocol. Candidate tests exercise
 real fixture bytes with a stateful GitHub boundary, including interrupted uploads,
 asset drift, publication refusal, and immutable completion. These local tests do
@@ -422,11 +438,11 @@ The private source's public-page builder runs without deployment credentials.
 The trusted Hub packager then verifies the manifest hash and packages only the
 listed public HTML and fixed navigation script; local review metadata and all
 other assets are excluded. The caller invokes the existing root-owned helper's
-explicit review plan/apply mode with protocol 10 and the manifest hash. It never
+explicit review plan/apply mode with protocol 11 and the manifest hash. It never
 falls back to full deployment or a weaker protocol. This mode does not stop the
 API, migrate a schema, replace binaries, or enable billing.
 
-The installed helper and caller must both support protocol 10 before dispatching
+The installed helper and caller must both support protocol 11 before dispatching
 either deployment workflow. The helper rejects changed base
 hashes, unapproved files and navigation code, symlinks and writable ancestry. It
 retains original files and modes under
