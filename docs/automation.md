@@ -29,7 +29,9 @@ preview is being reused. Do not run both paths for the same stable version.
    For promotion, create the public stable tag at the reviewed Hub promotion
    commit, and follow the receipt-based publication procedure below.
 4. Approve the exact stable candidate in the website's release gate. Publication
-   alone never advances downloads or updates.
+   alone never advances downloads or updates. After approval, promote that same
+   numeric GitHub release ID by setting `prerelease=false` and `make_latest=true`;
+   keep its tag, release notes, publication time, and all 16 assets unchanged.
 5. If this launch also changes the website or server, deploy the reviewed source
    with `--client-release` and verify the public feeds. Server-only deployment
    remains independent of client publication.
@@ -57,10 +59,9 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f source_sha="$source_sha"
 
 # Send another TestFlight build of an already-released version, without
-# rebuilding or republishing anything else. Each run stamps the built bundles
-# with its own run number, so App Store Connect accepts the upload as a new
-# build of the same version — which is what a rejected or superseded build in
-# review needs.
+# rebuilding or republishing anything else. Each workflow uses its own run
+# number as the build number. Check App Store Connect first: release and preview
+# counters are independent, so a new run does not guarantee a higher build number.
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f operation=ios \
   -f version="$version" \
