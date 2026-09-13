@@ -91,6 +91,73 @@ record its preview tag and exact 15 artifacts. The stable release path rejects
 prerelease labels, and the preview path requires one. A preview's provenance
 does not make it eligible for the website's stable candidate gate.
 
+## Promote a tested preview without rebuilding
+
+`promote-release.yml` prepares a stable acceptance candidate from an already
+tested, successful `pre-release.yml` run. It does not compile, sign, approve,
+deploy, or upload another TestFlight build. Supply the exact private source SHA,
+preview run ID, preview release ID, explicit preview tag, reviewed SHA-256 of
+its `release-provenance.json`, and stable `version`. The preview must contain all
+15 platform artifacts and provenance, and its recorded attempt must have all six
+successful jobs, including all four platforms and publication.
+
+Before dispatch, the operator verifies that repository release immutability is
+enabled, the public stable tag points to the reviewed promotion workflow commit,
+and the private stable tag resolves to the tested source. The stable release must
+be absent. Retiring an earlier rejected draft or fencing an older publisher is a
+separate reviewed operation; this tool never edits old releases or Git tags.
+The promotion workflow shares `release-${version}` concurrency with release builds.
+
+The CI preparation job checks both tag identities, source versions and changelog,
+the successful preview run, release ownership and exact provenance, then downloads
+all 15 artifacts and verifies their byte sizes and SHA-256 values. It writes a
+new stable provenance describing the same payload bytes. Its `workflowCommit`
+identifies the promotion workflow; the original build workflow, preview run,
+release, provenance hash and all artifact IDs remain explicit in the receipt
+and release notes. The source provenance is preserved alongside the receipt.
+
+CI creates a new numeric release ID under a unique
+`vX.Y.Z-promotion.<run-id>.<attempt>` draft tag and uploads only through that ID's
+API upload URL. It verifies all 16 uploaded asset IDs, sizes and digests before
+emitting a `PREPARED` receipt artifact. It never exposes this draft under the
+stable tag and never publishes it. CI has only `contents: write` and
+`actions: read`; the repository immutability setting requires administration
+read access and is checked by the operator, without adding an administrator
+credential to Actions.
+
+After the preparation run completes successfully, download its receipt artifact,
+record the exact `promotion-receipt.json` SHA-256, and use the same reviewed Hub
+checkout to finish publication:
+
+```sh
+python3 scripts/promote_release.py publish \
+  --receipt /private/path/promotion-receipt.json \
+  --receipt-sha256 <reviewed-receipt-sha256> \
+  --source-directory /path/to/exact-tested-private-checkout \
+  --directory /private/path/new-publication-evidence
+```
+
+The publish command captures the existing `gh auth token` in memory. It verifies
+the successful preparation workflow and attempt, downloads its original receipt
+artifact again, checks its API SHA-256, size, ZIP members and CRC, and requires the
+local receipt to match those exact CI bytes. It rechecks the source checkout and
+private stable tag, preview provenance and original artifacts, the independent
+draft's ownership and complete asset IDs/digests, the public stable tag, and the
+live repository immutability setting. An existing stable release always refuses
+publication.
+
+Only then does one PATCH of the new numeric ID set the stable `tag_name` and
+`draft=false` together, retaining `prerelease=true` and `make_latest=false`.
+The response and fresh reads must confirm `immutable=true`, the stable tag's
+exact Hub commit, and the unchanged complete artifact set. API conflicts or
+drift stop the operation; it never deletes, clobbers, automatically cleans up,
+or retries a publication mutation. A failed run retains its draft and receipt
+for inspection. Repository immutability protects the published assets and tag;
+GitHub's API documentation does not promise a wider multi-resource transaction.
+
+`PUBLISHED_IMMUTABLE_CANDIDATE` still means an unapproved acceptance candidate.
+The existing website release approval and distribution gate remains mandatory.
+
 The website release gate approves the exact source and artifact set before its
 download feed and updater feed advance. A GitHub publication, metadata refresh,
 or ordinary website deployment does not approve a candidate.

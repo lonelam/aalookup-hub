@@ -1,0 +1,88 @@
+name: Promote tested release
+run-name: Promote ${{ inputs.preview_tag }} to ${{ inputs.version }} from ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact tested private source commit (40 lowercase hex characters)
+        required: true
+        type: string
+      preview_run_id:
+        description: Successful pre-release.yml run ID
+        required: true
+        type: string
+      preview_release_id:
+        description: Published tested preview release ID
+        required: true
+        type: string
+      preview_tag:
+        description: Exact explicit preview tag
+        required: true
+        type: string
+      preview_provenance_sha256:
+        description: Reviewed SHA-256 of the original preview provenance
+        required: true
+        type: string
+      version:
+        description: Stable v-prefixed version (for example v1.0.0)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Prepare verified preview bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout exact promotion tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: public-workflow
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Checkout exact tested private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify promotion safety boundaries
+        run: python3 -m unittest discover -s public-workflow/tests -p test_promote_release.py
+      - name: Copy verified bytes into isolated draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AALOOKUP_SOURCE_TOKEN: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PREVIEW_RUN_ID: ${{ inputs.preview_run_id }}
+          PREVIEW_RELEASE_ID: ${{ inputs.preview_release_id }}
+          PREVIEW_TAG: ${{ inputs.preview_tag }}
+          PREVIEW_PROVENANCE_SHA256: ${{ inputs.preview_provenance_sha256 }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_DIRECTORY: ${{ github.workspace }}/private-source
+          PROMOTION_DIRECTORY: ${{ runner.temp }}/promotion-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 public-workflow/scripts/promote_release.py prepare
+      - name: Preserve promotion receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: promotion-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/promotion-${{ github.run_id }}-${{ github.run_attempt }}/promotion-receipt.json
+            ${{ runner.temp }}/promotion-${{ github.run_id }}-${{ github.run_attempt }}/preview-provenance.json
+            ${{ runner.temp }}/promotion-${{ github.run_id }}-${{ github.run_attempt }}/assets/release-provenance.json
+          if-no-files-found: warn
+          retention-days: 90
