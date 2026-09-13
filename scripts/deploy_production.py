@@ -34,12 +34,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-PROTOCOL = "7"
+PROTOCOL = "10"
 
 # \A…\Z, not ^…$: Python's `$` also matches before a trailing newline.
 COMMIT_SHA = re.compile(r"\A[0-9a-f]{40}\Z")
 DEPLOY_ACCOUNT = re.compile(r"\A[a-z_][a-z0-9_-]*\Z")
 PORT_NUMBER = re.compile(r"\A[0-9]+\Z")
+SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 class Fail(Exception):
@@ -96,11 +97,25 @@ def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     return result
 
 
+def deployment_target(source_sha: str) -> tuple[Path, str]:
+    operation = os.environ.get("DEPLOY_OPERATION", "release")
+    if operation == "release":
+        return (Path(f"aalookup-{source_sha}.tar.gz"),
+                f"--protocol {PROTOCOL} {shlex.quote(source_sha)}")
+    if operation not in ("review-pages-plan", "review-pages-apply"):
+        raise Fail("DEPLOY_OPERATION must be release, review-pages-plan, or review-pages-apply")
+    manifest_sha = required("REVIEW_MANIFEST_SHA256")
+    if not SHA256_HEX.fullmatch(manifest_sha):
+        raise Fail("REVIEW_MANIFEST_SHA256 must be an exact lowercase SHA-256")
+    return (Path(f"aalookup-review-pages-{source_sha}-{manifest_sha}.tar.gz"),
+            f"--{operation} --protocol {PROTOCOL} {shlex.quote(source_sha)} {manifest_sha}")
+
+
 def main() -> int:
     inputs = validated_inputs()
     source_sha = inputs["source_sha"]
 
-    archive = Path(f"aalookup-{source_sha}.tar.gz")
+    archive, helper_arguments = deployment_target(source_sha)
     if not archive.is_file():
         raise Fail(f"Missing deployment archive {archive}")
 
@@ -144,13 +159,19 @@ def main() -> int:
         ssh_options = [*common, "-p", inputs["deploy_port"]]
         scp_options = [*common, "-P", inputs["deploy_port"]]
 
+        # Refuse a mismatched host contract before uploading an artifact. The
+        # check also applies to the reviewed-page transport and never deploys.
+        check_command = (
+            "sudo -n -- /usr/local/sbin/aalookup-deploy "
+            f"--check --protocol {PROTOCOL}"
+        )
+        run(["ssh", *ssh_options, destination, check_command])
         run(["scp", *scp_options, str(archive), f"{destination}:{remote_archive}"])
 
         # The remote shell receives one string, so the only interpolated value
         # is quoted here. The protocol and path are literals.
         deploy_command = (
-            f"sudo -n -- /usr/local/sbin/aalookup-deploy "
-            f"--protocol {PROTOCOL} {shlex.quote(source_sha)}"
+            "sudo -n -- /usr/local/sbin/aalookup-deploy " + helper_arguments
         )
         deployed = run(["ssh", *ssh_options, destination, deploy_command], check=False)
         if deployed.returncode != 0:

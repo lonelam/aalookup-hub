@@ -17,7 +17,7 @@ npm --prefix ../aalookup run app:deploy
 # Or deploy any pushed private commit by its full SHA.
 npm --prefix ../aalookup run app:deploy -- <40-character-source-sha>
 
-# Publish a tagged private source revision as a public release.
+# Build a tagged revision as a GitHub acceptance candidate (not GitHub Latest).
 version=v0.4.0
 source_sha="$(git -C ../aalookup rev-parse "${version}^{commit}")"
 gh workflow run release.yml --repo lonelam/aalookup-hub \
@@ -40,10 +40,9 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f version="$version" \
   -f source_sha="$source_sha"
 
-# Refresh an already-published version without rebuilding it.
-gh workflow run release.yml --repo lonelam/aalookup-hub \
-  -f operation=refresh \
-  -f version="$version"
+# After approving this exact client version and source in the website release
+# gate, deploy its associated website/server revision with the approval check.
+npm --prefix ../aalookup run app:deploy -- --client-release "$version" "$source_sha"
 
 # Build and publish a GitHub-only prerelease from any pushed private commit.
 source_sha="$(git -C ../aalookup rev-parse HEAD)"
@@ -56,6 +55,43 @@ gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
   -f version=v0.3.30-rc.1
 ```
 
+`release.yml` publishes a stable `vX.Y.Z` tag as a public GitHub prerelease with
+`make_latest=false`, only after macOS, Windows, Android and iOS builds succeed.
+It no longer refreshes the production mirror or dispatches a website deployment.
+TestFlight upload remains part of the existing iOS testing flow; it does not
+submit an App Store release.
+
+The candidate includes `release-provenance.json` with `schemaVersion: 1`,
+`sourceCommit`, `workflowCommit`, `releaseTag`, and an `assets` array sorted by
+name. Each of the 15 platform artifacts has its exact `name`, `sha256` and `size`
+computed after signing/notarization and before upload. The provenance file is
+not self-listed. Only the reviewed installers and metadata are uploaded; private
+source files are never release assets. Existing public assets cannot be replaced.
+
+Both release workflows include the Windows NSIS installer and its signature,
+plus `AALookup-windows-x86_64-update.tar.gz` and its separate signature. New
+desktop clients prepare this complete runtime before their next cold launch;
+older Windows clients continue using the installer channel. The source build
+enforces a single executable with its VC runtime linked statically. macOS keeps
+the universal signed bundle and its signed update helper. Installer artifacts
+remain available for manual installation.
+
+`pre-release.yml` uses the same strict artifact writer with `--prerelease` to
+record its preview tag and exact 15 artifacts. The stable release path rejects
+prerelease labels, and the preview path requires one. A preview's provenance
+does not make it eligible for the website's stable candidate gate.
+
+The website release gate approves the exact source and artifact set before its
+download feed and updater feed advance. A GitHub publication, metadata refresh,
+or ordinary website deployment does not approve a candidate.
+For a website rollout associated with a client release, pass
+`--client-release vX.Y.Z` to `app:deploy` (or set the same `client_release_tag`
+workflow input). Immediately before deployment, the trusted helper checks the
+public `/api/v1/releases/latest` response against that version and the exact
+`source_sha`. Legacy manifests without `sourceCommit` fail this check. General
+server operations omit that optional input and remain independent of client
+releases; this is not a blanket restriction on all website content deployment.
+
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
 The latter identifies the public workflow revision, not the application being
 built. Deployment selection never depends on the private `deploy` branch. The
@@ -63,7 +99,7 @@ workflow checks out its SSH deployment helper from this repository, so an
 older source revision does not need to contain current Actions tooling.
 `scripts/deploy_production.py` is that helper's caller: it validates the inputs,
 copies the archive to the production host, and invokes the root-owned installer
-there as `aalookup-deploy --protocol 7 <sha>`. Nothing on this side touches
+there as `aalookup-deploy --protocol 10 <sha>`. Nothing on this side touches
 production state. The installer itself lives in the private source repository at
 `server/aalookup-deploy` and is installed on the host out of band, so this
 workflow can ship a bad binary — which the installer will roll back — but never
@@ -71,11 +107,63 @@ a bad deployment procedure. Both are Python; the protocol number is what makes a
 mismatch between them fail closed instead of half-running.
 The server quality gate runs the source repository's isolated PostgreSQL 17
 launcher, including matching PostgreSQL client tools and automatic fixture cleanup.
-Protocol 7 packages the API, backup, and native `aalookup-database` initializer
-from the same source build. The installed helper supports
-PostgreSQL-only production after SQLite retirement and checks unchanged issuer
-identity and authority when rolling back binaries. It never restores live
-PostgreSQL data during deployment.
+Protocol 10 explicitly builds and packages `aalookup-server`, `aalookup-backup`,
+`aalookup-database`, `aalookup-membership-transition`, and `aalookup-event-log`
+from the same source revision and `x86_64-unknown-linux-musl` release output.
+Each must be a regular, nonempty, statically linked binary; the workflow logs
+each SHA-256 and the final
+archive SHA-256. The shared event-log reader is installed at
+`/usr/local/libexec/aalookup-event-log` for authorized SSH log import. This requires
+the matching analytics implementation and protocol-10 helper in the private source
+repository. Payment operations now use the existing daemon through Admin
+APIs. The retired `aalookup-billing` and the offline `aalookup-billing-catalog`
+are excluded even if they exist in the local Cargo output directory. An older
+source SHA lacking a required binary cannot produce this package; never mix
+binaries from different revisions or retry with a historical protocol.
+The installed helper supports PostgreSQL-only production after SQLite retirement
+and checks unchanged issuer identity and authority when rolling back binaries.
+It never restores live PostgreSQL data during deployment.
+
+This release moves directly from the installed protocol 7 to protocol 10.
+The intermediate development contracts are not deployment stages. The only
+candidate payload contains all five binaries and the website; do not deploy a
+payment-only package first or upgrade through intermediate helpers.
+To activate protocol 10, merge this workflow and caller together, install the
+matching root-owned helper out of band, verify
+`aalookup-deploy --check --protocol 10`, then dispatch the reviewed source SHA.
+The caller runs that same read-only host check before uploading either a server
+archive or reviewed pages. A rejected check cleans up local credentials and
+prevents upload and deployment. Pause dispatches during coordination: the helper
+and caller intentionally reject different protocol versions. Merging this
+repository does not install the host helper. Installing the tools does not run
+billing reconciliation, apply an existing-user campaign, or enable sales.
+Before schema migration, also stop independently running maintenance writers.
+
+During protocol-10 deployment of the five matching binaries, the host transaction
+also backs up and removes an installed legacy billing tool. Early rollback
+restores the old tool and prior companions, or removes tools first installed by
+the failed attempt.
+Successful retirement removes the obsolete tool's recovery copy. A later website
+failure retains the healthy server and matching companions. These host behaviors
+are covered by the application helper tests; this Hub tests only the transport
+and package boundaries.
+
+Run the trusted caller and workflow packaging tests without SSH, Docker, or Cargo (including candidate provenance and associated-rollout gates):
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+The workflow runs this gate before invoking the deployment caller. Packaging
+tests execute the actual workflow shell with fixture binaries, mock only ELF
+inspection, and check archive membership, permissions, missing operators and
+dynamic-link rejection, and exclusion of retired/offline tools. Caller tests
+mock SSH and verify protocol 10 before upload, strict host identity, failed-check
+and failed-deployment cleanup, and no fallback protocol. The 2026-09-13 local
+run passed all 20 tests against protocol 10, including the existing client approval,
+release provenance and reviewed-page checks. It did not contact production or
+dispatch a workflow; a real Actions package and coordinated host installation remain
+release prerequisites.
 
 `pre-release.yml` accepts an exact source SHA without requiring a private source
 tag. If `version` is omitted, it derives `v<source-base-version>-pre.<12-character-sha>`.
@@ -110,7 +198,6 @@ Create these repository secrets for release builds:
 - `APPLE_CERTIFICATE_PASSWORD` (empty when the `.p12` is passwordless)
 - `APPLE_ID` (Apple account email used for notarization)
 - `APPLE_PASSWORD` (an Apple app-specific password, never the account password)
-- `AALOOKUP_RELEASE_REFRESH_TOKEN` (optional)
 - `GLITCHTIP_AUTH_TOKEN` (optional; a GlitchTip auth token with `org:read`,
   `project:read`, `project:write` and `project:releases`. Every client job and
   the deployment pass it to the private repository's release scripts, which use
@@ -129,8 +216,8 @@ the official updater installer gate, sign the exact renamed APK with
 `TAURI_SIGNING_PRIVATE_KEY`, and publish its adjacent `.apk.sig`. The
 certificate digest is checked against the optional secret above (or the
 keystore-derived value), so an APK signed by a different key cannot enter the
-release asset set. The server's updater manifest consumes this signed APK
-additively while the website's human download manifest continues to hide it.
+release asset set. The server's updater manifest and the website's download
+manifest both offer the approved direct APK.
 
 The iOS release and prerelease jobs require the App Store Connect API key
 secrets above. `ASC_API_KEY` is the unencoded `.p8` contents; the key ID must
@@ -151,9 +238,6 @@ signs and notarizes each app, then the workflow notarizes each final DMG. It
 checks the Developer ID authority, Team ID, hardened runtime, secure timestamps,
 stapled tickets, Gatekeeper assessments, DMG signatures, and ZIP integrity
 before uploading any macOS artifact.
-
-The repository may define `AALOOKUP_UPDATE_ORIGIN` as an Actions variable. It
-defaults to `https://aalookup.com`.
 
 Under **Settings -> Actions -> General -> Workflow permissions**, allow the
 workflow token to request write access. Only the final publish jobs request
@@ -185,3 +269,29 @@ Repository and environment secrets are available to anyone who can replace a
 trusted workflow with code that exports them. Keep write access narrow, protect
 the default branch, require review for `.github/workflows/**`, and add required
 reviewers to the `production` environment.
+
+## Public review pages
+
+`deploy-review-pages.yml` is a separate bounded operation, defaulting to
+`review-pages-plan`. It shares the `production-deploy` concurrency group and
+production environment with full deployment. Its required inputs are an exact
+private source SHA, the approved `manifest.json` SHA-256, and the root helper's
+read-only filesystem inventory JSON. Choose `review-pages-apply` only for the
+reviewed manifest; a changed live base or rebuilt candidate refuses publication.
+
+The private source's public-page builder runs without deployment credentials.
+The trusted Hub packager then verifies the manifest hash and packages only the
+listed public HTML and fixed navigation script; local review metadata and all
+other assets are excluded. The caller invokes the existing root-owned helper's
+explicit review plan/apply mode with protocol 10 and the manifest hash. It never
+falls back to full deployment or a weaker protocol. This mode does not stop the
+API, migrate a schema, replace binaries, or enable billing.
+
+Install the reviewed helper out of band and coordinate the protocol 10 caller
+before dispatching either deployment workflow. The helper rejects changed base
+hashes, unapproved files and navigation code, symlinks and writable ancestry. It
+retains original files and modes under
+`/var/backups/aalookup-review-pages/<manifest-sha256>/`, verifies public content,
+and rolls back normal failures. A hard termination may require operator recovery
+from the retained record. A successful plan consumes its uploaded archive;
+apply uploads the same candidate again and rechecks every precondition.

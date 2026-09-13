@@ -566,6 +566,17 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout trusted release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: public-workflow
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify trusted candidate packaging
+        run: python3 -m unittest discover -s public-workflow/tests -p test_release_candidate.py
+
       - name: Download macOS artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -609,12 +620,18 @@ jobs:
             AALookup-macos-x86_64.zip
             AALookup-windows-x86_64-setup.exe
             AALookup-windows-x86_64-setup.exe.sig
+            AALookup-windows-x86_64-update.tar.gz
+            AALookup-windows-x86_64-update.tar.gz.sig
             AALookup-android-aarch64.apk
             AALookup-android-aarch64.apk.sig
             AALookup-ios-arm64.ipa
           )
           for asset in "${expected[@]}"; do test -s "dist-release/$asset" || { echo "Missing release asset $asset" >&2; exit 1; }; done
           [[ "$(find dist-release -maxdepth 1 -type f | wc -l | tr -d ' ')" == "${#expected[@]}" ]] || { echo "Unexpected files found in dist-release" >&2; exit 1; }
+
+          python3 public-workflow/scripts/release_provenance.py --prerelease \
+            dist-release "$PRIVATE_SOURCE_SHA" "$PUBLIC_WORKFLOW_SHA" "$VERSION"
+          expected+=(release-provenance.json)
 
           notes="$RUNNER_TEMP/pre-release-notes.md"
           cat > "$notes" <<EOF
