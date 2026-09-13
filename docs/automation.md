@@ -63,10 +63,23 @@ submit an App Store release.
 
 The candidate includes `release-provenance.json` with `schemaVersion: 1`,
 `sourceCommit`, `workflowCommit`, `releaseTag`, and an `assets` array sorted by
-name. Each of the 13 platform artifacts has its exact `name`, `sha256` and `size`
+name. Each of the 15 platform artifacts has its exact `name`, `sha256` and `size`
 computed after signing/notarization and before upload. The provenance file is
 not self-listed. Only the reviewed installers and metadata are uploaded; private
 source files are never release assets. Existing public assets cannot be replaced.
+
+Both release workflows include the Windows NSIS installer and its signature,
+plus `AALookup-windows-x86_64-update.tar.gz` and its separate signature. New
+desktop clients prepare this complete runtime before their next cold launch;
+older Windows clients continue using the installer channel. The source build
+enforces a single executable with its VC runtime linked statically. macOS keeps
+the universal signed bundle and its signed update helper. Installer artifacts
+remain available for manual installation.
+
+`pre-release.yml` uses the same strict artifact writer with `--prerelease` to
+record its preview tag and exact 15 artifacts. The stable release path rejects
+prerelease labels, and the preview path requires one. A preview's provenance
+does not make it eligible for the website's stable candidate gate.
 
 The website release gate approves the exact source and artifact set before its
 download feed and updater feed advance. A GitHub publication, metadata refresh,
@@ -203,8 +216,8 @@ the official updater installer gate, sign the exact renamed APK with
 `TAURI_SIGNING_PRIVATE_KEY`, and publish its adjacent `.apk.sig`. The
 certificate digest is checked against the optional secret above (or the
 keystore-derived value), so an APK signed by a different key cannot enter the
-release asset set. The server's updater manifest consumes this signed APK
-additively while the website's human download manifest continues to hide it.
+release asset set. The server's updater manifest and the website's download
+manifest both offer the approved direct APK.
 
 The iOS release and prerelease jobs require the App Store Connect API key
 secrets above. `ASC_API_KEY` is the unencoded `.p8` contents; the key ID must

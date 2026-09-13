@@ -6,6 +6,8 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -67,8 +69,51 @@ class ReleaseProvenance(unittest.TestCase):
                 self.create()
         path.rmdir()
 
+    def test_staged_windows_runtime_requires_its_own_signature(self):
+        for name in ("AALookup-windows-x86_64-update.tar.gz",
+                     "AALookup-windows-x86_64-update.tar.gz.sig"):
+            path = self.root / name
+            content = path.read_bytes()
+            path.unlink()
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "exactly"):
+                self.create()
+            path.write_bytes(content)
+
+    def test_prerelease_cli_binds_preview_identity_and_the_same_signed_bytes(self):
+        command = [sys.executable, str(ROOT / "scripts/release_provenance.py"), "--prerelease",
+                   str(self.root), "a" * 40, "b" * 40, "v1.0.0-rc.1"]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads((self.root / provenance.PROVENANCE_NAME).read_text())
+        self.assertEqual(data["releaseTag"], "v1.0.0-rc.1")
+        self.assertEqual(len(data["assets"]), 15)
+        for item in data["assets"]:
+            content = (self.root / item["name"]).read_bytes()
+            self.assertEqual(item["sha256"], hashlib.sha256(content).hexdigest())
+
+    def test_prerelease_mode_rejects_stable_and_invalid_semver_labels(self):
+        for tag in ("v1.0.0", "v1.0.0-01", "v1.0.0-rc..1", "v1.0.0-rc.1+build", "1.0.0-rc.1"):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                self.create(release_tag=tag, prerelease=True)
+
 
 class CandidateWorkflow(unittest.TestCase):
+    def test_both_workflows_require_the_same_complete_signed_artifact_set(self):
+        self.assertEqual(len(provenance.ASSET_NAMES), 15)
+        for name in ("release.yml", "pre-release.yml"):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".github/workflows" / name).read_text()
+                expected = re.search(r"(?ms)^          expected=\(\n(.*?)^          \)", workflow).group(1).split()
+                self.assertEqual(len(expected), 15)
+                self.assertEqual(set(expected), set(provenance.ASSET_NAMES))
+                self.assertIn("expected+=(release-provenance.json)", workflow)
+                self.assertIn("path: public-workflow", workflow)
+                command = "python3 public-workflow/scripts/release_provenance.py"
+                if name == "pre-release.yml":
+                    command += " --prerelease"
+                self.assertIn(command + " \\\n            dist-release", workflow)
+                self.assertLess(workflow.index(command), workflow.index('gh release upload "$VERSION"'))
+
     def test_publish_requires_all_platforms_and_keeps_candidate_out_of_latest(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         job = workflow.split("\n  release:\n", 1)[1]

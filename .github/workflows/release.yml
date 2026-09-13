@@ -772,6 +772,8 @@ jobs:
             AALookup-macos-x86_64.zip
             AALookup-windows-x86_64-setup.exe
             AALookup-windows-x86_64-setup.exe.sig
+            AALookup-windows-x86_64-update.tar.gz
+            AALookup-windows-x86_64-update.tar.gz.sig
             AALookup-android-aarch64.apk
             AALookup-android-aarch64.apk.sig
             AALookup-ios-arm64.ipa
@@ -814,9 +816,9 @@ jobs:
           Download \`AALookup-windows-x86_64-setup.exe\`. The installer is not code-signed,
           so Windows may show a Microsoft Defender SmartScreen warning.
 
-          From this version on, AALookup checks for updates by itself and installs the next
-          one on a single click. The \`.sig\` file contains the update signature; there is
-          no need to download it.
+          AALookup prepares updates in the background and uses the next version when you
+          next open the app after quitting. There is no need to download the
+          \`-update.tar.gz\` or \`.sig\` files separately.
 
           ## Install (macOS)
 
@@ -832,10 +834,10 @@ jobs:
           2. Grant **Accessibility** and, if you enable OCR, **Screen Recording**.
 
           The macOS application is signed with an Apple Developer ID and notarized by Apple.
-          AALookup now checks for macOS updates and can install later releases from inside the
-          app. The first updater-enabled release still requires one manual \`.dmg\` installation;
-          after that one-time rollout, later updates can be installed in AALookup. The
-          \`.app.tar.gz\` and \`.sig\` files are updater assets; there is no need to download them.
+          AALookup prepares updates in the background and uses the next version when you
+          next open the app after quitting. Older installations without update support need
+          one manual \`.dmg\` installation first. There is no need to download the
+          \`.app.tar.gz\` or \`.sig\` files separately.
 
           ## Mobile (experimental)
 
@@ -848,7 +850,7 @@ jobs:
 
           | File | Platform |
           | --- | --- |
-          | \`AALookup-android-aarch64.apk\` | Android 10+, 64-bit ARM |
+          | \`AALookup-android-aarch64.apk\` | Android 11+, 64-bit ARM |
           | \`AALookup-ios-arm64.ipa\` | iPhone / iPad |
 
           The APK installs directly once your device allows installing from this source. The

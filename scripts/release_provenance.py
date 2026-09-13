@@ -2,12 +2,12 @@
 """Describe final signed candidate bytes without exposing private source files."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
 import stat
-import sys
 
 ASSET_NAMES = (
     "AALookup-macos-aarch64.dmg", "AALookup-macos-aarch64.zip",
@@ -15,17 +15,24 @@ ASSET_NAMES = (
     "AALookup-macos-universal.app.tar.gz.sig", "AALookup-macos-universal.zip",
     "AALookup-macos-x86_64.dmg", "AALookup-macos-x86_64.zip",
     "AALookup-windows-x86_64-setup.exe", "AALookup-windows-x86_64-setup.exe.sig",
+    "AALookup-windows-x86_64-update.tar.gz", "AALookup-windows-x86_64-update.tar.gz.sig",
     "AALookup-android-aarch64.apk", "AALookup-android-aarch64.apk.sig",
     "AALookup-ios-arm64.ipa",
 )
 PROVENANCE_NAME = "release-provenance.json"
 
 
-def write_provenance(directory: Path, source_commit: str, workflow_commit: str, release_tag: str) -> Path:
+def write_provenance(directory: Path, source_commit: str, workflow_commit: str, release_tag: str,
+                     *, prerelease: bool = False) -> Path:
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (source_commit, workflow_commit)):
         raise ValueError("source and workflow commits must be full lowercase SHA values")
-    if not re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", release_tag):
-        raise ValueError("release tag must be a stable v-prefixed version")
+    version = r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    if prerelease:
+        identifier = r"(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+        version += rf"-{identifier}(?:\.{identifier})*"
+    if not re.fullmatch(version, release_tag):
+        kind = "prerelease" if prerelease else "stable"
+        raise ValueError(f"release tag must be a {kind} v-prefixed version")
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("artifact directory must be a regular directory")
     if {path.name for path in directory.iterdir()} != set(ASSET_NAMES):
@@ -56,6 +63,12 @@ def write_provenance(directory: Path, source_commit: str, workflow_commit: str, 
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        raise SystemExit("usage: release_provenance.py <artifact-directory> <source-commit> <workflow-commit> <release-tag>")
-    print(write_provenance(Path(sys.argv[1]), *sys.argv[2:]))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prerelease", action="store_true")
+    parser.add_argument("directory", type=Path)
+    parser.add_argument("source_commit")
+    parser.add_argument("workflow_commit")
+    parser.add_argument("release_tag")
+    args = parser.parse_args()
+    print(write_provenance(args.directory, args.source_commit, args.workflow_commit,
+                           args.release_tag, prerelease=args.prerelease))
