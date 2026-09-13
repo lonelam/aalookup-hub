@@ -98,40 +98,57 @@ class ReleaseProvenance(unittest.TestCase):
 
 
 class CandidateWorkflow(unittest.TestCase):
-    def test_both_workflows_require_the_same_complete_signed_artifact_set(self):
+    def test_both_workflows_use_the_same_trusted_publisher(self):
         self.assertEqual(len(provenance.ASSET_NAMES), 15)
         for name in ("release.yml", "pre-release.yml"):
             with self.subTest(workflow=name):
                 workflow = (ROOT / ".github/workflows" / name).read_text()
-                expected = re.search(r"(?ms)^          expected=\(\n(.*?)^          \)", workflow).group(1).split()
-                self.assertEqual(len(expected), 15)
-                self.assertEqual(set(expected), set(provenance.ASSET_NAMES))
-                self.assertIn("expected+=(release-provenance.json)", workflow)
-                self.assertIn("path: public-workflow", workflow)
-                command = "python3 public-workflow/scripts/release_provenance.py"
-                if name == "pre-release.yml":
-                    command += " --prerelease"
-                self.assertIn(command + " \\\n            dist-release", workflow)
-                self.assertLess(workflow.index(command), workflow.index('gh release upload "$VERSION"'))
+                command = "python3 public-workflow/scripts/publish_candidate.py publish"
+                self.assertIn(command, workflow)
+                self.assertIn("test_publish_candidate.py", workflow)
+                self.assertIn("test_release_candidate.py", workflow)
+                self.assertIn("--directory dist-release --notes \"$notes\"" +
+                              (" --prerelease" if name == "pre-release.yml" else "\n"), workflow)
+                self.assertNotIn("gh release upload", workflow)
+                self.assertNotIn("--clobber", workflow)
+                self.assertNotIn("expected=(", workflow)
+                self.assertIn("Private source:", workflow)
+                self.assertIn("Public workflow commit:", workflow)
 
-    def test_publish_requires_all_platforms_and_keeps_candidate_out_of_latest(self):
+    def test_preflight_precedes_builds_and_does_not_block_ios_or_verify(self):
+        for name in ("release.yml", "pre-release.yml"):
+            workflow = (ROOT / ".github/workflows" / name).read_text()
+            resolve = workflow.split("\n  macos:\n", 1)[0]
+            self.assertIn("      contents: read", resolve)
+            self.assertIn("run: python3 public-workflow/scripts/publish_candidate.py check", resolve)
+            for step_name in ("Checkout trusted publication preflight", "Check publication target before platform builds"):
+                step = re.search(r"(?ms)^      - name: " + re.escape(step_name) + r"\n(.*?)(?=^      - name: |^      # |\Z)", resolve).group(1)
+                self.assertEqual("if: ${{ inputs.operation == 'release' }}" in step, name == "release.yml")
+            preflight = resolve.split("      - name: Check publication target before platform builds", 1)[1]
+            self.assertIn("GH_TOKEN: ${{ github.token }}", preflight)
+            self.assertIn("VERSION: ${{ steps.source.outputs.version }}", preflight)
+            self.assertIn("PRIVATE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}", preflight)
+            self.assertIn("PUBLIC_WORKFLOW_SHA: ${{ github.sha }}", preflight)
+            self.assertNotIn("AALOOKUP_SOURCE_TOKEN", preflight)
+
+    def test_publish_requires_all_platforms_and_keeps_distribution_separate(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         job = workflow.split("\n  release:\n", 1)[1]
         needs = re.search(r"(?ms)^    needs:\n(.*?)^    if:", job).group(1)
         self.assertEqual(re.findall(r"- (\w+)", needs), ["resolve", "macos", "windows", "android", "ios"])
+        preview = (ROOT / ".github/workflows/pre-release.yml").read_text()
+        self.assertIn("needs: [resolve, macos, windows, android, ios]", preview.split("\n  publish:\n", 1)[1])
         self.assertNotIn("always()", job)
-        self.assertNotIn("make_latest=true", workflow)
-        self.assertNotIn("releases/refresh", workflow)
-        self.assertNotIn("AALOOKUP_RELEASE_REFRESH_TOKEN", workflow)
-        self.assertNotIn("\n  refresh:", workflow)
-        self.assertIn("-F draft=false \\\n            -F prerelease=true \\\n            --raw-field make_latest=false", job)
-        self.assertLess(job.index("release_provenance.py"), job.index('gh release upload "$VERSION"'))
-        self.assertIn("expected+=(release-provenance.json)", job)
-        self.assertIn("Private source:", job)
-        self.assertIn("Public workflow commit:", job)
-        self.assertIn('"$actual_manifest" != "$expected_manifest"', job)
-        self.assertIn("already published and cannot be replaced", job)
-        self.assertNotIn("workflow run deploy", workflow)
+        for source in (workflow, preview):
+            self.assertNotIn("make_latest=true", source)
+            self.assertNotIn("releases/refresh", source)
+            self.assertNotIn("AALOOKUP_RELEASE_REFRESH_TOKEN", source)
+            self.assertNotIn("workflow run deploy", source)
+            self.assertIn("bash scripts/release-ios.sh", source)
+            self.assertNotIn("predates", source)
+            self.assertNotIn("building without an error-reporting DSN", source)
+        source_input = workflow.split("      source_sha:\n", 1)[1].split("      version:\n", 1)[0]
+        self.assertIn("required: true", source_input)
 
 
 if __name__ == "__main__":
