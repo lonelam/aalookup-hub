@@ -82,6 +82,7 @@ class PackagingContract(unittest.TestCase):
         self.assertEqual(tuple(re.search(r"binaries=\(([^)]+)\)", package).group(1).split()), BINARIES)
         self.assertNotIn("--bins", build)
         self.assertNotIn("aalookup-billing", build + package)
+        self.assertIn("run: npm run server:deploy:test\n", source)
 
     def test_archive_contains_every_operator_from_the_same_build_output(self):
         # Other local Cargo outputs must not widen the production payload.

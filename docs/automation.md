@@ -111,8 +111,10 @@ The installed helper supports PostgreSQL-only production after SQLite retirement
 and checks unchanged issuer identity and authority when rolling back binaries.
 It never restores live PostgreSQL data during deployment.
 
-Protocols 7 (three binaries), 8 (five binaries including the retired billing
-tool), and 9 (four binaries) are historical contracts.
+This release moves directly from the installed protocol 7 to protocol 10.
+The intermediate development contracts are not deployment stages. The only
+candidate payload contains all five binaries and the website; do not deploy a
+payment-only package first or upgrade through intermediate helpers.
 To activate protocol 10, merge this workflow and caller together, install the
 matching root-owned helper out of band, verify
 `aalookup-deploy --check --protocol 10`, then dispatch the reviewed source SHA.
@@ -144,8 +146,8 @@ tests execute the actual workflow shell with fixture binaries, mock only ELF
 inspection, and check archive membership, permissions, missing operators and
 dynamic-link rejection, and exclusion of retired/offline tools. Caller tests
 mock SSH and verify protocol 10 before upload, strict host identity, failed-check
-and failed-deployment cleanup, and no fallback protocol. The 2026-09-12 local
-run passed all 20 tests against protocol 9, including the existing client approval,
+and failed-deployment cleanup, and no fallback protocol. The 2026-09-13 local
+run passed all 20 tests against protocol 10, including the existing client approval,
 release provenance and reviewed-page checks. It did not contact production or
 dispatch a workflow; a real Actions package and coordinated host installation remain
 release prerequisites.

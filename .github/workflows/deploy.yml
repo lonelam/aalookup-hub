@@ -110,12 +110,8 @@ jobs:
       # beside it in the source repository rather than in the architecture
       # glob, so without naming them here nothing in this job covers the thing
       # doing the installing.
-      #
-      # --if-present because this job checks out whichever source revision was
-      # asked for, including one older than the script: a rollback to an
-      # earlier release must not fail on a missing test.
       - name: Verify the production deploy helper
-        run: npm run server:deploy:test --if-present
+        run: npm run server:deploy:test
 
       - name: Build website
         env:
