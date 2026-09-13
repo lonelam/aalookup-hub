@@ -15,7 +15,7 @@ does not build, publish, approve, or deploy a release.
 | `pre-release.yml` — Build preview | Test an exact pushed source SHA before reserving a stable tag | GitHub-only preview and TestFlight build |
 | `promote-release.yml` — Promote tested release | Reuse the exact accepted preview artifacts | Receipt and isolated draft; operator publication completes the stable candidate |
 | `release.yml` — Build acceptance candidate | Build a stable source tag directly, or use `operation=ios` / `operation=verify` | Stable acceptance candidate, TestFlight-only build, or macOS signing verification |
-| `deploy.yml` — Deploy server and website | Roll out a reviewed server and website revision | Production deployment with protocol and health checks |
+| `deploy.yml` — Deploy server and website | Roll out a reviewed server and website revision, or select `website_only` for website changes | Production deployment with protocol and health checks |
 | `deploy-review-pages.yml` — Publish public review pages | Maintain an approved set of public static pages | Plan or apply only that manifest; independent of client releases |
 
 For a client release, prefer **preview → acceptance → promotion of the same
@@ -50,6 +50,9 @@ npm --prefix ../aalookup run app:deploy
 
 # Or deploy any pushed private commit by its full SHA.
 npm --prefix ../aalookup run app:deploy -- <40-character-source-sha>
+
+# Deploy website changes without rebuilding or restarting the API.
+npm --prefix ../aalookup run app:deploy -- --website-only <40-character-source-sha>
 
 # Build a tagged revision as a GitHub acceptance candidate (not GitHub Latest).
 version=v1.0.1
@@ -231,6 +234,25 @@ server operations omit that optional input and remain independent of client
 releases; this is not a blanket restriction on all website content deployment.
 
 ## Server and website deployment
+
+For a website change, set the `website_only` workflow input to `true` or use
+`app:deploy -- --website-only <source-sha>`. The default remains the full server
+and website deployment. Website-only runs keep `npm ci`, the content and
+architecture checks, deploy-helper tests, `site:build`, and `site:test`. They
+skip Rust installation, Rust caching, musl tools, PostgreSQL server tests, and
+all binary builds and packaging.
+
+The website-only archive is `aalookup-website-<sha>.tar.gz` and contains only
+`website/`. Before SSH or credential setup, the trusted caller verifies the
+complete bundled SSR runtime and the Vite asset manifest, including every
+referenced JavaScript, stylesheet, asset, and imported chunk. It then runs
+`aalookup-deploy --check --website-only --protocol 11` before upload and installs
+with `--website-only --protocol 11 <sha>`. The installed helper must support this
+mode before dispatch. Its preflight has no API or database prerequisites, and
+the transaction does not stop the API, replace binaries, run migrations, or
+create a database backup. It replaces and restarts only the website and checks
+its health; failures restore the previous website. The usual production lock,
+client-associated rollout approval, and protocol checks still apply.
 
 The source SHA is deliberately separate from this repository's `GITHUB_SHA`.
 The latter identifies the public workflow revision, not the application being

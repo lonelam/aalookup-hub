@@ -20,10 +20,12 @@ Environment (all required unless noted):
     DEPLOY_PORT             SSH port (default 22)
     DEPLOY_URL              public origin, used only for validation here
     SOURCE_SHA              exact 40-character commit SHA being deployed
+    DEPLOY_OPERATION        release (default), website-only, or reviewed-page mode
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -31,6 +33,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -102,13 +105,70 @@ def deployment_target(source_sha: str) -> tuple[Path, str]:
     if operation == "release":
         return (Path(f"aalookup-{source_sha}.tar.gz"),
                 f"--protocol {PROTOCOL} {shlex.quote(source_sha)}")
+    if operation == "website-only":
+        return (Path(f"aalookup-website-{source_sha}.tar.gz"),
+                f"--website-only --protocol {PROTOCOL} {shlex.quote(source_sha)}")
     if operation not in ("review-pages-plan", "review-pages-apply"):
-        raise Fail("DEPLOY_OPERATION must be release, review-pages-plan, or review-pages-apply")
+        raise Fail("DEPLOY_OPERATION must be release, website-only, review-pages-plan, or review-pages-apply")
     manifest_sha = required("REVIEW_MANIFEST_SHA256")
     if not SHA256_HEX.fullmatch(manifest_sha):
         raise Fail("REVIEW_MANIFEST_SHA256 must be an exact lowercase SHA-256")
     return (Path(f"aalookup-review-pages-{source_sha}-{manifest_sha}.tar.gz"),
             f"--{operation} --protocol {PROTOCOL} {shlex.quote(source_sha)} {manifest_sha}")
+
+
+def verify_website_archive(archive: Path) -> None:
+    """Validate the complete website transport before any credential or SSH use."""
+    if archive.is_symlink() or archive.stat().st_size > 104857600:
+        raise Fail("Website archive must be regular and at most 100 MiB")
+    files = {}
+    expanded = 0
+    try:
+        with tarfile.open(archive, "r:gz") as payload:
+            seen = set()
+            for entry in payload:
+                name = entry.name.removeprefix("./").rstrip("/")
+                if (name in seen or not name or name.startswith("/") or "\\" in name
+                        or any(part in ("", ".", "..") for part in name.split("/"))
+                        or name.split("/")[0] != "website" or not (entry.isfile() or entry.isdir())):
+                    raise Fail("Website archive must contain only regular website files and directories")
+                seen.add(name)
+                if entry.isfile():
+                    files[name] = entry
+                    expanded += entry.size
+                if len(seen) > 20000 or expanded > 536870912:
+                    raise Fail("Website archive exceeds the host's entry or expanded size limit")
+            required_files = ("index.html", ".ssr/server.mjs", ".ssr/entry-server.mjs",
+                              ".ssr/render.mjs", ".ssr/template.html", ".vite/manifest.json")
+            for name in required_files:
+                if f"website/{name}" not in files or files[f"website/{name}"].size <= 0:
+                    raise Fail(f"Missing regular nonempty website runtime file: {name}")
+            manifest_entry = files["website/.vite/manifest.json"]
+            if manifest_entry.size > 10 * 1024 * 1024:
+                raise Fail("Website asset manifest is too large")
+            manifest = json.load(payload.extractfile(manifest_entry))
+            if not isinstance(manifest, dict) or not manifest or "index.html" not in manifest:
+                raise Fail("Website asset manifest must contain its HTML entry")
+            for entry in manifest.values():
+                if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+                    raise Fail("Invalid website asset manifest entry")
+                resources = [entry["file"]]
+                for field in ("css", "assets", "imports", "dynamicImports"):
+                    values = entry.get(field, [])
+                    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+                        raise Fail("Invalid website asset manifest references")
+                    if field in ("imports", "dynamicImports"):
+                        if any(value not in manifest for value in values):
+                            raise Fail("Website asset manifest references a missing chunk")
+                    else:
+                        resources.extend(values)
+                for resource in resources:
+                    if (resource.startswith("/") or "\\" in resource
+                            or any(part in ("", ".", "..") for part in resource.split("/"))
+                            or f"website/{resource}" not in files):
+                        raise Fail(f"Website asset manifest references a missing file: {resource}")
+    except (OSError, tarfile.TarError, ValueError, TypeError) as error:
+        raise Fail("Invalid website deployment archive or asset manifest") from error
 
 
 def main() -> int:
@@ -118,6 +178,9 @@ def main() -> int:
     archive, helper_arguments = deployment_target(source_sha)
     if not archive.is_file():
         raise Fail(f"Missing deployment archive {archive}")
+    website_only = os.environ.get("DEPLOY_OPERATION", "release") == "website-only"
+    if website_only:
+        verify_website_archive(archive)
 
     runner_temp = os.environ.get("RUNNER_TEMP")
     if not runner_temp:
@@ -163,7 +226,7 @@ def main() -> int:
         # check also applies to the reviewed-page transport and never deploys.
         check_command = (
             "sudo -n -- /usr/local/sbin/aalookup-deploy "
-            f"--check --protocol {PROTOCOL}"
+            f"--check {'--website-only ' if website_only else ''}--protocol {PROTOCOL}"
         )
         run(["ssh", *ssh_options, destination, check_command])
         run(["scp", *scp_options, str(archive), f"{destination}:{remote_archive}"])

@@ -9,6 +9,11 @@ on:
         description: Exact commit SHA from lonelam/aalookup to deploy
         required: true
         type: string
+      website_only:
+        description: Deploy only the website, keeping the running API and database unchanged
+        required: false
+        default: false
+        type: boolean
       client_release_tag:
         description: Optional client release associated with this website rollout; requires approval of its exact source
         required: false
@@ -78,6 +83,7 @@ jobs:
           cache-dependency-path: source/package-lock.json
 
       - name: Install Rust stable
+        if: ${{ !inputs.website_only }}
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
@@ -86,6 +92,7 @@ jobs:
       # Two thirds of this job is cargo: the host debug build behind
       # `cargo test` and the musl release build, both from scratch.
       - name: Cache Rust dependencies
+        if: ${{ !inputs.website_only }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: server
@@ -93,6 +100,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install musl build tools
+        if: ${{ !inputs.website_only }}
         run: |
           sudo apt-get update
           sudo apt-get install --yes binutils file musl-tools openssl
@@ -135,11 +143,13 @@ jobs:
       # The launcher owns an isolated PostgreSQL 17 container, TLS credentials,
       # per-test databases, and matching pg_dump/pg_restore client wrappers.
       - name: Test server against PostgreSQL 17
+        if: ${{ !inputs.website_only }}
         run: |
           docker info >/dev/null
           node scripts/test-postgres.mjs -- test --locked -p aalookup-server --all-targets --all-features
 
       - name: Build server
+        if: ${{ !inputs.website_only }}
         run: >-
           cargo build --locked --release -p aalookup-server -p aalookup-event-log
           --bin aalookup-server --bin aalookup-backup
@@ -149,6 +159,7 @@ jobs:
       - name: Package deployment
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          WEBSITE_ONLY: ${{ inputs.website_only }}
         run: |
           set -euo pipefail
           if [[ ! -d website/dist/.ssr || -L website/dist/.ssr ]]; then
@@ -164,31 +175,39 @@ jobs:
             fi
           done
           install -d deploy/website
-          binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition aalookup-event-log)
-          for name in "${binaries[@]}"; do
-            binary="target/x86_64-unknown-linux-musl/release/$name"
-            if [[ ! -f "$binary" || -L "$binary" || ! -s "$binary" ]]; then
-              echo "Missing regular nonempty deployment binary: $name" >&2
-              exit 1
-            fi
-            file "$binary" | tee /dev/stderr \
-              | grep --quiet --extended-regexp "static(ally|-pie)? linked"
-            install -m 0755 "$binary" "deploy/$name"
-            # Linux keeps the workspace's line tables inside each ELF. Strip
-            # only the shipping copy; retain the original build for diagnostics.
-            strip --strip-debug "deploy/$name"
-            printf '%s build bytes: ' "$name"
-            wc -c < "$binary"
-            printf '%s deployment bytes: ' "$name"
-            wc -c < "deploy/$name"
-            sha256sum "deploy/$name"
-          done
+          if [[ "${WEBSITE_ONLY:-false}" != "true" ]]; then
+            binaries=(aalookup-server aalookup-backup aalookup-database aalookup-membership-transition aalookup-event-log)
+            for name in "${binaries[@]}"; do
+              binary="target/x86_64-unknown-linux-musl/release/$name"
+              if [[ ! -f "$binary" || -L "$binary" || ! -s "$binary" ]]; then
+                echo "Missing regular nonempty deployment binary: $name" >&2
+                exit 1
+              fi
+              file "$binary" | tee /dev/stderr \
+                | grep --quiet --extended-regexp "static(ally|-pie)? linked"
+              install -m 0755 "$binary" "deploy/$name"
+              # Linux keeps the workspace's line tables inside each ELF. Strip
+              # only the shipping copy; retain the original build for diagnostics.
+              strip --strip-debug "deploy/$name"
+              printf '%s build bytes: ' "$name"
+              wc -c < "$binary"
+              printf '%s deployment bytes: ' "$name"
+              wc -c < "deploy/$name"
+              sha256sum "deploy/$name"
+            done
+          fi
           cp -a website/dist/. deploy/website/
-          tar -C deploy -czf "aalookup-${SOURCE_SHA}.tar.gz" .
+          if [[ "${WEBSITE_ONLY:-false}" == "true" ]]; then
+            export DEPLOY_ARCHIVE="aalookup-website-${SOURCE_SHA}.tar.gz"
+            tar -C deploy -czf "$DEPLOY_ARCHIVE" website
+          else
+            export DEPLOY_ARCHIVE="aalookup-${SOURCE_SHA}.tar.gz"
+            tar -C deploy -czf "$DEPLOY_ARCHIVE" .
+          fi
           python3 <<'PY'
           import os
           from pathlib import Path
-          archive = Path(f"aalookup-{os.environ['SOURCE_SHA']}.tar.gz")
+          archive = Path(os.environ["DEPLOY_ARCHIVE"])
           files = [entry for entry in Path("deploy").rglob("*") if entry.is_file()]
           packed = archive.stat().st_size
           unpacked = sum(entry.stat().st_size for entry in files)
@@ -196,7 +215,7 @@ jobs:
           if packed > 104857600 or unpacked > 536870912:
               raise SystemExit("Deployment exceeds the host's 100 MiB archive or 512 MiB expanded limit")
           PY
-          sha256sum "aalookup-${SOURCE_SHA}.tar.gz"
+          sha256sum "$DEPLOY_ARCHIVE"
 
       - name: Checkout trusted deployment tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -219,6 +238,7 @@ jobs:
 
       - name: Deploy production
         env:
+          DEPLOY_OPERATION: ${{ inputs.website_only && 'website-only' || 'release' }}
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

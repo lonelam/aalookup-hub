@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import json
+import shutil
 from pathlib import Path
 import re
 import subprocess
@@ -191,6 +193,85 @@ class PackagingContract(unittest.TestCase):
         self.assertIn("Missing regular website SSR runtime directory", result.stderr)
         self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
 
+    def test_website_only_packages_no_binaries_and_verifies_the_asset_manifest(self):
+        shutil.rmtree(self.root / "target")
+        website = self.root / "website/dist"
+        (website / "assets").mkdir()
+        (website / ".vite").mkdir()
+        (website / "assets/main-12345678.js").write_text("console.log('website');")
+        (website / ".vite/manifest.json").write_text(json.dumps({
+            "index.html": {"file": "assets/main-12345678.js", "isEntry": True},
+        }))
+        result = self.package(WEBSITE_ONLY="true", TEST_STRIP_FAILURE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = self.root / f"aalookup-website-{SOURCE_SHA}.tar.gz"
+        caller.verify_website_archive(archive)
+        with tarfile.open(archive) as payload:
+            self.assertTrue(all(entry.name == "website" or entry.name.startswith("website/") for entry in payload))
+        self.assertFalse((self.root / f"aalookup-{SOURCE_SHA}.tar.gz").exists())
+        self.assertNotIn("build bytes:", result.stdout)
+
+    def test_website_only_workflow_skips_every_rust_and_postgres_step(self):
+        workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
+        self.assertRegex(workflow, r"website_only:[\s\S]*?default: false\n        type: boolean")
+        for name in ("Install Rust stable", "Cache Rust dependencies", "Install musl build tools",
+                     "Test server against PostgreSQL 17", "Build server"):
+            step = workflow.split(f"- name: {name}\n", 1)[1].split("- name:", 1)[0]
+            self.assertIn("if: ${{ !inputs.website_only }}", step, name)
+        self.assertIn("DEPLOY_OPERATION: ${{ inputs.website_only && 'website-only' || 'release' }}", workflow)
+        for name in ("Build website", "Verify website rendering and runtime"):
+            step = workflow.split(f"- name: {name}\n", 1)[1].split("- name:", 1)[0]
+            self.assertNotIn("!inputs.website_only", step)
+
+
+class WebsiteManifestContract(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.website = self.root / "website"
+        (self.website / ".ssr").mkdir(parents=True)
+        (self.website / "assets").mkdir()
+        (self.website / ".vite").mkdir()
+        for name in WEBSITE_FILES:
+            (self.website / name).write_text("fixture")
+        (self.website / "assets/main-12345678.js").write_text("main")
+        self.manifest = {"index.html": {"file": "assets/main-12345678.js"}}
+
+    def archive(self):
+        (self.website / ".vite/manifest.json").write_text(json.dumps(self.manifest))
+        archive = self.root / "website.tar.gz"
+        with tarfile.open(archive, "w:gz") as payload:
+            payload.add(self.website, arcname="website")
+        return archive
+
+    def test_manifest_rejects_missing_resources_and_imported_chunks(self):
+        for field in ("css", "assets", "imports", "dynamicImports"):
+            with self.subTest(field=field):
+                self.manifest["index.html"] = {"file": "assets/main-12345678.js", field: ["missing"]}
+                with self.assertRaisesRegex(caller.Fail, "missing"):
+                    caller.verify_website_archive(self.archive())
+
+    def test_manifest_rejects_traversal_and_invalid_entry_shapes(self):
+        for entry in ({"file": "../outside"}, {"file": "assets/main-12345678.js", "css": "wrong"}, None):
+            with self.subTest(entry=entry):
+                self.manifest["index.html"] = entry
+                with self.assertRaises(caller.Fail):
+                    caller.verify_website_archive(self.archive())
+
+    def test_symlink_or_api_binary_cannot_enter_website_transport(self):
+        linked = self.website / "linked"
+        linked.symlink_to("index.html")
+        with self.assertRaises(caller.Fail):
+            caller.verify_website_archive(self.archive())
+        linked.unlink()
+        archive = self.archive()
+        with tarfile.open(archive, "w:gz") as payload:
+            payload.add(self.website, arcname="website")
+            payload.add(self.website / "index.html", arcname="aalookup-server")
+        with self.assertRaises(caller.Fail):
+            caller.verify_website_archive(archive)
+
 
 class CallerContract(unittest.TestCase):
     def run_caller(self, deploy_status=0, check_status=0, **environment):
@@ -211,6 +292,7 @@ class CallerContract(unittest.TestCase):
                 return subprocess.CompletedProcess(args, result)
             with patch.object(caller, "validated_inputs", return_value=inputs), \
                     patch.object(caller.Path, "is_file", return_value=True), \
+                    patch.object(caller, "verify_website_archive"), \
                     patch.dict(os.environ, {"RUNNER_TEMP": directory, **environment}, clear=True), \
                     patch.object(caller.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as key_probe, \
                     patch.object(caller, "run", side_effect=run):
@@ -234,14 +316,26 @@ class CallerContract(unittest.TestCase):
             self.assertIn("IdentitiesOnly=yes", args)
 
     def test_protocol_mismatch_never_uploads_or_deploys(self):
-        for operation in ("release", "review-pages-plan", "review-pages-apply"):
+        for operation in ("release", "website-only", "review-pages-plan", "review-pages-apply"):
             with self.subTest(operation=operation):
                 result, calls = self.run_caller(check_status=1, DEPLOY_OPERATION=operation,
                                                 REVIEW_MANIFEST_SHA256="d" * 64)
                 self.assertIsInstance(result, caller.Fail)
                 self.assertEqual(str(result), "host protocol check failed")
                 self.assertEqual(len(calls), 1)
-                self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --protocol 11")
+                expected_mode = "--website-only " if operation == "website-only" else ""
+                self.assertEqual(calls[0][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --check {expected_mode}--protocol 11")
+
+    def test_website_only_preflights_and_deploys_without_the_full_release_mode(self):
+        result, calls = self.run_caller(DEPLOY_OPERATION="website-only")
+        self.assertEqual(result, 0)
+        self.assertEqual([args[0] for args in calls], ["ssh", "scp", "ssh"])
+        self.assertEqual(calls[0][-1], "sudo -n -- /usr/local/sbin/aalookup-deploy --check --website-only --protocol 11")
+        self.assertEqual(calls[1][-1], f"www@example.test:/home/www/deploy/aalookup-website-{SOURCE_SHA}.tar.gz")
+        self.assertEqual(calls[2][-1], f"sudo -n -- /usr/local/sbin/aalookup-deploy --website-only --protocol 11 {SOURCE_SHA}")
+        result, calls = self.run_caller(deploy_status=1, DEPLOY_OPERATION="website-only")
+        self.assertEqual(result, 1)
+        self.assertEqual(calls[-1][-1], f"rm -f -- /home/www/deploy/aalookup-website-{SOURCE_SHA}.tar.gz")
 
     def test_failed_deployment_cleans_archive_without_a_weaker_protocol_retry(self):
         result, calls = self.run_caller(deploy_status=1)
@@ -262,6 +356,18 @@ class CallerContract(unittest.TestCase):
                                  f"sudo -n -- /usr/local/sbin/aalookup-deploy --{operation} --protocol 11 {SOURCE_SHA} {manifest}")
                 self.assertEqual(calls[1][-1],
                                  f"www@example.test:/home/www/deploy/aalookup-review-pages-{SOURCE_SHA}-{manifest}.tar.gz")
+
+    def test_invalid_website_manifest_stops_before_credentials_or_network(self):
+        with patch.object(caller, "validated_inputs", return_value={"source_sha": SOURCE_SHA}), \
+                patch.object(caller.Path, "is_file", return_value=True), \
+                patch.dict(os.environ, {"DEPLOY_OPERATION": "website-only"}, clear=True), \
+                patch.object(caller, "verify_website_archive", side_effect=caller.Fail("invalid manifest")), \
+                patch.object(caller, "run") as network, \
+                patch.object(caller.tempfile, "mkdtemp") as credentials:
+            with self.assertRaisesRegex(caller.Fail, "invalid manifest"):
+                caller.main()
+            network.assert_not_called()
+            credentials.assert_not_called()
 
     def test_unknown_operation_or_unpinned_review_is_rejected_before_network(self):
         for environment in ({"DEPLOY_OPERATION": "website"}, {"DEPLOY_OPERATION": "review-pages-apply"},
