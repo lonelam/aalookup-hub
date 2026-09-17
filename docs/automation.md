@@ -348,6 +348,32 @@ the website or desktop updater. The Android preview still contains the
 check-only updater path, but prerelease artifacts are not mirrored as a
 production update; preview installers must be downloaded and installed manually.
 
+### Dictionary content is not a deployment
+
+Two kinds of content reach production beside the binary, and neither goes
+through `deploy.yml`:
+
+- **The first-party dictionary lexicon** — the exports of `ai-dictionary/` in
+  the aalookup repository, one add-only `<edition>/<version>/` directory under
+  `/var/lib/aalookup/dictionary-lexicon` on hk-app, which the running API
+  picks up on a poll without a restart. It is published by copying a version
+  directory there (server-maintaining, `nodes/hk-app/install/dictionary-lexicon/`),
+  or by the generation pipeline running on the server. A deployment neither
+  ships nor touches it; the API deployed from a source SHA that has the
+  lexicon routes (aalookup `418e0597` and later) serves whatever versions are
+  there when it starts.
+- **Online dictionary packages** — `npm run online:build` output rsynced
+  add-only to `/var/www/aalookup-online-dictionaries/<id>/<version>/` and the
+  V2 catalog installed through the admin lifecycle, the manual runbook in
+  `online-dictionaries/README.md` ("Publish"). A workflow for this step does
+  not exist yet; when it does, it needs a deploy-helper mode for the file
+  push (root-owned, add-only) and an admin credential for the catalog install,
+  separate from the deployment lock.
+
+Ordering matters: a package that names an edition the API cannot serve yet
+shows every desktop a failing row, so the lexicon and the API go first and the
+catalog last.
+
 ## Repository secrets
 
 Create `AALOOKUP_SOURCE_TOKEN` as a repository secret. It is a long-lived
