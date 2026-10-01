@@ -24,7 +24,12 @@ def check_approved_release(origin: str, release_tag: str, source_sha: str) -> No
     parsed = urlsplit(origin)
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
         raise ValueError("DEPLOY_URL must be an HTTPS origin without credentials, path, query or fragment")
-    request = Request(origin.rstrip("/") + "/api/v1/releases/latest", headers={"Accept": "application/json", "Cache-Control": "no-cache"})
+    request = Request(origin.rstrip("/") + "/api/v1/releases/latest", headers={
+        "Accept": "application/json",
+        "Cache-Control": "no-cache",
+        # Identify the deployment caller instead of urllib's generic bot UA.
+        "User-Agent": "AALookup-Deploy/1.0 (+https://aalookup.com)",
+    })
     with urlopen(request, timeout=20) as response:
         if response.status != 200:
             raise ValueError("approved release manifest is unavailable")
