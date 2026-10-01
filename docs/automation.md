@@ -225,6 +225,12 @@ The existing website release approval and distribution gate remains mandatory.
 The website release gate approves the exact source and artifact set before its
 download feed and updater feed advance. A GitHub publication, metadata refresh,
 or ordinary website deployment does not approve a candidate.
+The public approval probe identifies itself as `AALookup-Deploy/1.0` rather than
+Python's generic client. On 2026-10-02, Cloudflare's Browser Integrity Check blocked
+the generic `Python-urllib/3.12` request from the production workflow. The caller
+keeps HTTPS verification, the approved version/source check and all size/time
+bounds; no Cloudflare security settings or release approvals are bypassed.
+
 For a website rollout associated with a client release, pass
 `--client-release vX.Y.Z` to `app:deploy` (or set the same `client_release_tag`
 workflow input). Immediately before deployment, the trusted helper checks the

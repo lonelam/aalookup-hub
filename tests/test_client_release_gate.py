@@ -36,6 +36,7 @@ class ClientReleaseGate(unittest.TestCase):
             self.assertEqual(request.full_url, "https://example.test/api/v1/releases/latest")
             self.assertEqual(request.get_method(), "GET")
             self.assertEqual(request.headers["Cache-control"], "no-cache")
+            self.assertEqual(request.headers["User-agent"], "AALookup-Deploy/1.0 (+https://aalookup.com)")
             self.assertEqual(opener.call_args.kwargs["timeout"], 20)
         for origin in ("http://example.test", "https://secret@example.test", "https://example.test/path", "https://example.test?key=x"):
             with self.subTest(origin=origin), self.assertRaises(ValueError):
