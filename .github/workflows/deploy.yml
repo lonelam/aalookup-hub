@@ -14,6 +14,11 @@ on:
         required: false
         default: false
         type: boolean
+      wiki_check_only:
+        description: Check Wiki push access without building or deploying anything
+        required: false
+        default: false
+        type: boolean
       client_release_tag:
         description: Optional client release associated with this website rollout; requires approval of its exact source
         required: false
@@ -49,6 +54,7 @@ jobs:
   deploy:
     name: Build and deploy production
     needs: wiki-access
+    if: ${{ !inputs.wiki_check_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:

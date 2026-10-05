@@ -167,6 +167,7 @@ class WikiTests(unittest.TestCase):
         deploy = source.split("  deploy:\n", 1)[1].split("  sync-wiki:\n", 1)[0]
         sync = source.split("  sync-wiki:\n", 1)[1]
         self.assertIn("needs: wiki-access", deploy)
+        self.assertIn("if: ${{ !inputs.wiki_check_only }}", deploy)
         self.assertIn("needs: deploy", sync)
         self.assertNotIn("always()", sync)
         self.assertNotIn("WIKI_TOKEN", deploy)

@@ -560,7 +560,10 @@ GitHub documents initial creation and `.wiki.git` cloning in
 [Adding or editing Wiki pages](https://docs.github.com/en/communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages).
 
 `wiki-access` checks the Wiki repository and dry-run push authorization before any
-production work. The build exports only the public structured content, validates it,
+production work. To verify first-time setup or a rotated credential without building,
+deploying, or changing Wiki content, dispatch `deploy.yml` with `wiki_check_only=true`
+and a valid `source_sha` input. Only `wiki-access` runs; the source is not checked out.
+The build exports only the public structured content, validates it,
 and uploads 32 Markdown pages and a revision manifest as an artifact retained for
 seven days. The artifact never includes the source tree, publisher books or credentials.
 The Wiki token is provided only to trusted Wiki jobs; it is absent from the app build.
