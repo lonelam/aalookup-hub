@@ -23,7 +23,7 @@ concurrency:
 jobs:
   distribute:
     name: Submit exact build to the existing public group
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     timeout-minutes: 30
     permissions:
       contents: read
