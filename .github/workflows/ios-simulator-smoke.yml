@@ -69,6 +69,10 @@ jobs:
             .dev-data/ios-simulator-smoke-*/bundle-verification.json
             .dev-data/ios-simulator-smoke-*/App-Info.plist
             .dev-data/ios-simulator-smoke-*/application.log
+            .dev-data/ios-simulator-smoke-*/commands.log
+            .dev-data/ios-simulator-smoke-*/installation.log
+            .dev-data/ios-simulator-smoke-*/simulator-host.log
+            .dev-data/ios-simulator-smoke-*/simulator-final-state.json
             .dev-data/ios-simulator-smoke-*/final-screen.png
             .dev-data/ios-simulator-smoke-*/screenshots/**
             .dev-data/ios-simulator-smoke-*/Smoke.xcresult/**
