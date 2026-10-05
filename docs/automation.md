@@ -18,6 +18,7 @@ does not build, publish, approve, or deploy a release.
 | `deploy.yml` — Deploy server and website | Roll out a reviewed server and website revision, or select `website_only` for website changes | Production deployment with protocol and health checks |
 | `deploy-review-pages.yml` — Publish public review pages | Maintain an approved set of public static pages | Plan or apply only that manifest; independent of client releases |
 | `ios-simulator-smoke.yml` — Verify iPadOS 27 startup | Exercise the native app from an exact private SHA on an iPad simulator | Build, XCTest results and screenshots; no publication or TestFlight upload |
+| `testflight-public.yml` — Distribute public TestFlight | Finish distribution of an exact already-uploaded iOS version and build number | Existing public group association, Beta App Review submission and automatic distribution after approval; no rebuild |
 
 For a client release, prefer **preview → acceptance → promotion of the same
 bytes → distribution approval**. Direct stable builds remain available when no
@@ -122,8 +123,76 @@ not physical-device upgrade or App Store approval.
 `release.yml` publishes a stable `vX.Y.Z` tag as a public GitHub prerelease with
 `make_latest=false`, only after macOS, Windows, Android and iOS builds succeed.
 It does not refresh the production mirror or dispatch a website deployment.
-TestFlight upload remains part of the existing iOS testing flow; it does not
-submit an App Store release.
+The iOS jobs in both build workflows now attempt public TestFlight distribution
+after retaining the signed IPA artifact. This also applies to `operation=ios`.
+It does not submit an App Store release.
+
+### Public TestFlight candidates
+
+Every future iOS candidate/preview should reach the existing public
+`test-external` group, not stop at a successful IPA upload. The stable and preview
+workflows call trusted Hub code from their own exact `github.sha`, passing the
+embedded marketing version and the same `github.run_number` used by the IPA.
+There is no latest-build lookup, private-source execution in the distribution
+tool, new dependency installation, new credential, or change to the public link.
+
+`scripts/distribute_testflight.py` uses the official App Store Connect API and
+the existing three `ASC_API_*` secrets. The key needs App Manager or Admin access
+for external distribution; an upload-only role is insufficient. It verifies app
+`6803544073` / `com.aalookup.app`, exact iOS version/build, and existing public group
+`de5fef9d-5f92-4921-88f0-07ea4884ae5e` with its enabled link
+<https://testflight.apple.com/join/ckB7WYFu>. It never creates groups, changes link
+limits, expires older builds, edits compliance declarations or account/review
+credentials, or publishes an App Store version.
+
+The tool waits up to 20 minutes for Apple processing, preserves existing What to
+Test text, supplies bilingual online-dictionary instructions when it is empty,
+enables automatic tester notification, and adds the exact build to the group.
+It submits Beta App Review when needed or starts testing an approved build.
+Already waiting/reviewing/testing builds do not receive duplicate submissions
+or notifications. It records `availableToPublicTesters: true` only for
+`IN_BETA_TESTING`; waiting for review is a successful submission, not availability.
+Apple approval can still take time and cannot be bypassed.
+
+Metadata GETs are bounded; the tool does not download or hash IPA payloads.
+JWT authentication signs only a small header/claim message with OpenSSL and a
+temporary mode-0600 key, deleted on normal exit. Keys and API response bodies
+are excluded from logs and receipts. Mutations are never automatically retried;
+an uncertain response requires inspecting state before another invocation.
+
+Distribution failure is explicitly reported as a warning and a job-summary
+action item, while retaining the successful upload and allowing other platform
+artifacts to publish. This preserves the existing six-job preview promotion
+contract. Public TestFlight acceptance must be checked separately from the build
+job's success. Missing permissions, review information, export compliance,
+rejection, expiry or unexpected state require operator action.
+
+To finish distribution without another upload or version bump:
+
+```sh
+gh workflow run testflight-public.yml --repo lonelam/aalookup-hub \
+  -f version=1.0.15 -f build_number=72
+```
+
+Use the selected candidate's actual marketing version and build number, not the
+GitHub preview label. Release and preview run counters remain independent; check
+App Store Connect before building to avoid a conflicting CFBundleVersion.
+The standalone workflow fails visibly if it cannot finish and retains a receipt
+only after verifying the resulting group, automatic notification and beta state.
+
+When API access or runners are unavailable, finish the same step in App Store
+Connect: TestFlight → `test-external` → Builds → Add build → exact version/build.
+Use the fresh-install and existing-install online learner-dictionary paths in
+What to Test, select Automatically notify testers, then Submit Review / Start
+Testing. Record whether it is waiting or actually testing and keep the public
+link above. Do this when browser access is available during candidate work; a
+successful IPA upload alone is not completion of public testing distribution.
+
+References: [Apple external testing](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers),
+[beta review API](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-betaappreviewsubmissions),
+[group association API](https://developer.apple.com/documentation/appstoreconnectapi/post-v1-betagroups-_id_-relationships-builds).
+
+### Candidate artifacts
 
 The candidate includes `release-provenance.json` with `schemaVersion: 1`,
 `sourceCommit`, `workflowCommit`, `releaseTag`, and an `assets` array sorted by

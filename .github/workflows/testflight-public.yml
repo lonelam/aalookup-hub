@@ -1,0 +1,55 @@
+name: Distribute public TestFlight
+
+run-name: Public TestFlight ${{ inputs.version }} (${{ inputs.build_number }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact uploaded marketing version (for example 1.0.15)
+        required: true
+        type: string
+      build_number:
+        description: Exact uploaded CFBundleVersion (for example 72); never latest
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: public-testflight-6803544073
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    name: Submit exact build to the existing public group
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted distribution code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify distribution contracts
+        run: python3 -m unittest discover -s tests -p 'test_distribute_testflight.py'
+      - name: Distribute the uploaded build
+        env:
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          python3 scripts/distribute_testflight.py --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" --receipt testflight-receipt.json
+      - name: Retain distribution result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: testflight-distribution-${{ inputs.build_number }}
+          path: testflight-receipt.json
+          if-no-files-found: error
+          retention-days: 14
