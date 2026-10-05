@@ -31,11 +31,16 @@ class IosSimulatorSmokeTests(unittest.TestCase):
             self.assertRegex(action, r"@[0-9a-f]{40}$")
         self.assertIn("if: always()", WORKFLOW)
         self.assertIn("retention-days: 7", WORKFLOW)
-        paths = WORKFLOW.split("          path: |", 1)[1].splitlines()
-        self.assertTrue(paths)
-        self.assertTrue(all(path.strip().startswith(".dev-data/ios-simulator-smoke-*/") for path in paths if path.strip()))
-        self.assertIn("Smoke.xcresult/**", WORKFLOW)
-        self.assertIn("screenshots/**", WORKFLOW)
+        paths = [path.strip() for path in WORKFLOW.split("          path: |", 1)[1].splitlines() if path.strip()]
+        expected = {
+            ".dev-data/ios-simulator-smoke-*/" + name for name in (
+                "environment.json", "simulators.json", "bundle-verification.json", "App-Info.plist",
+                "application.log", "commands.log", "installation.log", "simulator-host.log",
+                "simulator-final-state.json", "final-screen.png", "screenshots/**", "Smoke.xcresult/**",
+            )
+        }
+        self.assertEqual(set(paths), expected)
+        self.assertEqual(len(paths), len(expected))
 
 
 if __name__ == "__main__":
