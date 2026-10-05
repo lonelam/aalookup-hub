@@ -144,8 +144,8 @@ def detail(client, build_id):
 
 def public_groups(client, build_id):
     # Apple exposes group membership through the filtered collection, not a build subresource GET.
-    return client.rows("/v1/betaGroups", {"filter[app]": APP_ID,
-                       "filter[builds]": build_id, "filter[id]": GROUP_ID})
+    # Only one relationship filter is allowed; validate_group already checked app ownership.
+    return client.rows("/v1/betaGroups", {"filter[builds]": build_id, "filter[id]": GROUP_ID})
 
 
 def build_body(resource_type, build_id, attributes=None):
