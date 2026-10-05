@@ -588,3 +588,11 @@ its Wiki consequences. No historical compatibility branch is carried in the norm
 Validation: `python3 -m unittest discover -s tests` includes export safety, ownership,
 real local Git push/idempotency, stale-site refusal and concurrent-edit preservation.
 These tests do not prove that a production credential has been configured.
+
+2026-10-06 setup verification: a dedicated fine-grained token restricted to
+`lonelam/aalookup-hub` (Contents read/write, Metadata read) is stored as
+`AALOOKUP_WIKI_TOKEN` and expires on 2027-01-04. Its owner, `lonelam`, must rotate it
+before expiry and rerun the check-only operation. [Actions run 37361529141](https://github.com/lonelam/aalookup-hub/actions/runs/37361529141)
+successfully cloned the actual Wiki and checked authenticated push access. Both
+production deployment and Wiki publication were skipped, as requested by that run's
+`wiki_check_only` input; this is credential verification, not publication evidence.
