@@ -66,6 +66,8 @@ gh workflow run release.yml --repo lonelam/aalookup-hub \
 # rebuilding or republishing anything else. Each workflow uses its own run
 # number as the build number. Check App Store Connect first: release and preview
 # counters are independent, so a new run does not guarantee a higher build number.
+# iOS accepts only the current private main commit, with matching source versions.
+source_sha="$(gh api repos/lonelam/aalookup/git/ref/heads/main --jq .object.sha)"
 gh workflow run release.yml --repo lonelam/aalookup-hub \
   -f operation=ios \
   -f version="$version" \
@@ -135,6 +137,11 @@ check runs during source resolution, before the platform builds. It rejects an
 already published version, a foreign draft, or a public tag pointing at another
 Hub commit. `operation=ios` and `operation=verify` skip this publication check so
 an existing stable version can still receive a TestFlight build or signing check.
+For `operation=ios`, source identity is checked against the current private
+`main` commit instead of the historical version tag. This permits a corrected
+App Store build with the same marketing version without moving published tags
+or replacing their artifacts. All source version checks still apply. Stable
+publication and macOS verification continue to require the exact version tag.
 Source SHAs are required for every operation.
 
 The shared publisher owns the artifact manifest and provenance generation. It

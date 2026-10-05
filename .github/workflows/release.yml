@@ -79,6 +79,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.source_sha }}
           GH_TOKEN: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
           SOURCE_REPOSITORY: lonelam/aalookup
+          OPERATION: ${{ inputs.operation }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -113,39 +114,46 @@ jobs:
           done
 
           encoded_version="$(jq --null-input --raw-output --arg version "$VERSION" '$version | @uri')"
-          tag_object="$(
+          # An iOS resubmission keeps its marketing version while taking fixes
+          # from reviewed main; published release tags must remain immutable.
+          if [[ "$OPERATION" == "ios" ]]; then
+            source_ref="heads/main"
+          else
+            source_ref="tags/${encoded_version}"
+          fi
+          ref_object="$(
             curl --fail --silent --show-error \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${SOURCE_REPOSITORY}/git/ref/tags/${encoded_version}"
+              "https://api.github.com/repos/${SOURCE_REPOSITORY}/git/ref/${source_ref}"
           )"
-          tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_object")"
-          tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_object")"
+          ref_type="$(jq --exit-status --raw-output '.object.type' <<< "$ref_object")"
+          ref_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$ref_object")"
           for _depth in 1 2 3 4 5; do
-            if [[ "$tag_type" == "commit" ]]; then
+            if [[ "$ref_type" == "commit" ]]; then
               break
             fi
-            if [[ "$tag_type" != "tag" ]]; then
-              echo "$VERSION points to unsupported Git object type $tag_type" >&2
+            if [[ "$ref_type" != "tag" ]]; then
+              echo "$source_ref points to unsupported Git object type $ref_type" >&2
               exit 1
             fi
-            tag_object="$(
+            ref_object="$(
               curl --fail --silent --show-error \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
-                "https://api.github.com/repos/${SOURCE_REPOSITORY}/git/tags/${tag_sha}"
+                "https://api.github.com/repos/${SOURCE_REPOSITORY}/git/tags/${ref_sha}"
             )"
-            tag_type="$(jq --exit-status --raw-output '.object.type' <<< "$tag_object")"
-            tag_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$tag_object")"
+            ref_type="$(jq --exit-status --raw-output '.object.type' <<< "$ref_object")"
+            ref_sha="$(jq --exit-status --raw-output '.object.sha' <<< "$ref_object")"
           done
-          if [[ "$tag_type" != "commit" ]]; then
-            echo "$VERSION did not resolve to a commit after five tag objects" >&2
+          if [[ "$ref_type" != "commit" ]]; then
+            echo "$source_ref did not resolve to a commit after five tag objects" >&2
             exit 1
           fi
-          if [[ "$tag_sha" != "$resolved_sha" ]]; then
-            echo "$VERSION points to $tag_sha instead of requested source $resolved_sha" >&2
+          if [[ "$ref_sha" != "$resolved_sha" ]]; then
+            echo "$source_ref points to $ref_sha instead of requested source $resolved_sha" >&2
             exit 1
           fi
 
