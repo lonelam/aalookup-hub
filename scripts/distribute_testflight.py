@@ -142,6 +142,12 @@ def detail(client, build_id):
     return client.call("GET", f"/v1/builds/{build_id}/buildBetaDetail")["data"]
 
 
+def public_groups(client, build_id):
+    # Apple exposes group membership through the filtered collection, not a build subresource GET.
+    # Only one relationship filter is allowed; validate_group already checked app ownership.
+    return client.rows("/v1/betaGroups", {"filter[builds]": build_id, "filter[id]": GROUP_ID})
+
+
 def build_body(resource_type, build_id, attributes=None):
     data = {"type": resource_type, "relationships": {"build": {"data": {"type": "builds", "id": build_id}}}}
     if attributes is not None:
@@ -179,7 +185,7 @@ def distribute(client, version, number, timeout=1200, sleep=time.sleep, clock=ti
     if beta["attributes"].get("autoNotifyEnabled") is not True:
         client.call("PATCH", f"/v1/buildBetaDetails/{beta['id']}", {"data": {
             "type": "buildBetaDetails", "id": beta["id"], "attributes": {"autoNotifyEnabled": True}}})
-    groups = client.rows(f"/v1/builds/{build_id}/betaGroups")
+    groups = public_groups(client, build_id)
     if not any(row["id"] == GROUP_ID for row in groups):
         client.call("POST", f"/v1/betaGroups/{GROUP_ID}/relationships/builds",
                     {"data": [{"type": "builds", "id": build_id}]})
@@ -194,7 +200,7 @@ def distribute(client, version, number, timeout=1200, sleep=time.sleep, clock=ti
     # Only bounded GET retries absorb Apple's read-after-write delay; mutations are never retried.
     for attempt in range(7):
         final = detail(client, build_id)["attributes"]
-        groups = client.rows(f"/v1/builds/{build_id}/betaGroups")
+        groups = public_groups(client, build_id)
         state = final.get("externalBuildState")
         if (state in PENDING | {"IN_BETA_TESTING"} and final.get("autoNotifyEnabled") is True
                 and any(row["id"] == GROUP_ID for row in groups)):

@@ -136,6 +136,14 @@ embedded marketing version and the same `github.run_number` used by the IPA.
 There is no latest-build lookup, private-source execution in the distribution
 tool, new dependency installation, new credential, or change to the public link.
 
+Internal group `test` (`1aaf5815-0024-4e77-a632-0e1df92bf300`) already automatically
+distributes uploaded Xcode builds. Keep that setting enabled and verify the same
+candidate is Testing there as part of release acceptance. On 2026-10-06 the UI
+confirmed 1.0.15 (72) was Testing in this group while the external group waited
+for Beta App Review. Internal testing does not wait for external approval.
+Testers can update immediately; device-side automatic installation follows their
+TestFlight settings. This tool does not expire older internal or external builds.
+
 `scripts/distribute_testflight.py` uses the official App Store Connect API and
 the existing three `ASC_API_*` secrets. The key needs App Manager or Admin access
 for external distribution; an upload-only role is insufficient. It verifies app
