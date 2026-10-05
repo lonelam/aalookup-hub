@@ -528,3 +528,60 @@ retains original files and modes under
 and rolls back normal failures. A hard termination may require operator recovery
 from the retained record. A successful plan consumes its uploaded archive;
 apply uploads the same candidate again and rechecks every precondition.
+
+
+## Automatic user Wiki publication
+
+Both full and website-only `deploy.yml` runs publish the GitHub **Wiki tab**, not a
+`docs/` mirror in this repository. The sole authoring source is the private app's
+`website/src/wiki/content.json`. It contains 14 paired English/Chinese guides.
+The website and Wiki render that same source revision; routine copy changes need
+no merge or manual edit in Hub. Do not edit generated Wiki pages directly.
+
+One-time setup (required before enabling the updated workflow):
+
+1. Open [the Wiki](https://github.com/lonelam/aalookup-hub/wiki) and create its first
+   `Home` page. GitHub creates the separate `.wiki.git` repository only after an
+   initial page is saved. Make the first line exactly
+   `<!-- AALookup generated user guide. -->` so automation can own that page.
+   Existing human-authored pages without this marker are preserved; a name
+   collision fails rather than overwriting them.
+2. Add repository Actions secret `AALOOKUP_WIKI_TOKEN` using a dedicated credential
+   that can push `lonelam/aalookup-hub.wiki.git`. Limit it to this repository with
+   Contents read/write where the credential type supports Wiki Git access; otherwise
+   use the smallest GitHub-supported public-repository scope. Verify actual Wiki
+   push access rather than assuming that permission to the main repository suffices.
+   Configure expiry/rotation in the account that owns the credential. Neither
+   `GITHUB_TOKEN` nor `AALOOKUP_SOURCE_TOKEN` is an automatic fallback.
+3. Land the source Wiki implementation and this Hub workflow before dispatching the
+   first deployment. Select its exact pushed source SHA as usual.
+
+GitHub documents initial creation and `.wiki.git` cloning in
+[Adding or editing Wiki pages](https://docs.github.com/en/communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages).
+
+`wiki-access` checks the Wiki repository and dry-run push authorization before any
+production work. The build exports only the public structured content, validates it,
+and uploads 32 Markdown pages and a revision manifest as an artifact retained for
+seven days. The artifact never includes the source tree, publisher books or credentials.
+The Wiki token is provided only to trusted Wiki jobs; it is absent from the app build.
+
+After `deploy` succeeds, `sync-wiki` downloads that run's artifact and invokes
+`scripts/sync_wiki.py`. The publisher validates the selected source SHA, safe filenames,
+regular files, size bounds and generated-page markers. It verifies the live website's
+`/wiki/revision.json` before local changes and again before pushing. The production
+concurrency group covers the full workflow, including Wiki publication. A rerun for
+an older source cannot publish over a newer live website.
+
+Only marked generated pages are updated or deleted. Human pages and attachments are
+preserved. The publisher never force-pushes; concurrent edits cause a visible failure.
+Identical content produces no new commit. A Wiki failure marks the deployment Action
+failed after the site may already be live. Rerun failed jobs while the artifact exists,
+or redeploy the same SHA. Restoring an older source that supports this contract also
+restores its generated Wiki after the corresponding website deployment succeeds.
+Sources predating the exporter/revision endpoint fail before deployment in this workflow;
+use the historical trusted workflow revision for such a rollback and explicitly review
+its Wiki consequences. No historical compatibility branch is carried in the normal flow.
+
+Validation: `python3 -m unittest discover -s tests` includes export safety, ownership,
+real local Git push/idempotency, stale-site refusal and concurrent-edit preservation.
+These tests do not prove that a production credential has been configured.
