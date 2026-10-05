@@ -70,7 +70,9 @@ class Apple:
                 "app": {"data": {"id": distribution.APP_ID}}, "preReleaseVersion": {"data": {"id": "train"}}}}]
         if path.endswith("/betaBuildLocalizations"):
             return self.notes
-        if path.endswith("/betaGroups"):
+        if path == "/v1/betaGroups":
+            assert query == {"filter[app]": distribution.APP_ID,
+                             "filter[builds]": "build", "filter[id]": distribution.GROUP_ID}
             return [{"id": distribution.GROUP_ID}] if self.grouped else []
         raise AssertionError(path)
 
