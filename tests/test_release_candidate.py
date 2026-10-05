@@ -131,6 +131,24 @@ class CandidateWorkflow(unittest.TestCase):
             self.assertIn("PUBLIC_WORKFLOW_SHA: ${{ github.sha }}", preflight)
             self.assertNotIn("AALOOKUP_SOURCE_TOKEN", preflight)
 
+    def test_ios_uses_current_main_while_release_and_verify_keep_tag_identity(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        source_step = workflow.split("      - name: Verify source identity and versions", 1)[1].split(
+            "      - name: Checkout trusted publication preflight", 1)[0]
+        self.assertIn("OPERATION: ${{ inputs.operation }}", source_step)
+        selection = re.search(r'(?ms)^          if \[\[ "\$OPERATION" == "ios" \]\]; then\n.*?^          fi', source_step).group(0)
+        for operation, expected in (("ios", "heads/main"), ("release", "tags/v1.0.14"),
+                                    ("verify", "tags/v1.0.14")):
+            with self.subTest(operation=operation):
+                script = f'OPERATION={operation}; encoded_version=v1.0.14\n{selection}\nprintf "%s" "$source_ref"'
+                result = subprocess.run(["bash", "-eu", "-c", script], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+        self.assertIn('git/ref/${source_ref}', source_step)
+        self.assertIn('if [[ "$ref_sha" != "$resolved_sha" ]]; then', source_step)
+        self.assertIn('if [[ "$resolved_sha" != "$EXPECTED_SHA" ]]; then', source_step)
+        self.assertIn('if [[ "$actual" != "$expected_version" ]]; then', source_step)
+
     def test_publish_requires_all_platforms_and_keeps_distribution_separate(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         job = workflow.split("\n  release:\n", 1)[1]
