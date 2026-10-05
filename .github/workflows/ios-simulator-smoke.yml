@@ -1,0 +1,74 @@
+name: Verify iPadOS 27 startup
+run-name: iPadOS 27 smoke from ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact private application commit to exercise; no publication or TestFlight upload
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: xcode-27
+    timeout-minutes: 120
+    permissions: {}
+    steps:
+      - name: Validate exact source revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "source_sha must be exactly 40 lowercase hexadecimal characters" >&2; exit 1; }
+      - name: Checkout exact private source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lonelam/aalookup
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.AALOOKUP_SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Confirm source identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios-sim
+      - name: Cache simulator Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ios27-simulator
+          cache-on-failure: true
+      - name: Install build tools and frontend dependencies
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          npm ci
+      - name: Build and exercise the actual iPad app
+        run: node scripts/ios-simulator-smoke.mjs
+      - name: Preserve native test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios27-simulator-smoke
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            .dev-data/ios-simulator-smoke-*/environment.json
+            .dev-data/ios-simulator-smoke-*/simulators.json
+            .dev-data/ios-simulator-smoke-*/bundle-verification.json
+            .dev-data/ios-simulator-smoke-*/App-Info.plist
+            .dev-data/ios-simulator-smoke-*/application.log
+            .dev-data/ios-simulator-smoke-*/final-screen.png
+            .dev-data/ios-simulator-smoke-*/screenshots/**
+            .dev-data/ios-simulator-smoke-*/Smoke.xcresult/**

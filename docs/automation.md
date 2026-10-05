@@ -7,7 +7,7 @@ that exact revision with a read-only credential.
 
 ## Choose the operation
 
-All five workflows are manual-only. Merging application or Hub code into `main`
+All workflows are manual-only. Merging application or Hub code into `main`
 does not build, publish, approve, or deploy a release.
 
 | Workflow | Use it for | Result |
@@ -17,6 +17,7 @@ does not build, publish, approve, or deploy a release.
 | `release.yml` — Build acceptance candidate | Build a stable source tag directly, or use `operation=ios` / `operation=verify` | Stable acceptance candidate, TestFlight-only build, or macOS signing verification |
 | `deploy.yml` — Deploy server and website | Roll out a reviewed server and website revision, or select `website_only` for website changes | Production deployment with protocol and health checks |
 | `deploy-review-pages.yml` — Publish public review pages | Maintain an approved set of public static pages | Plan or apply only that manifest; independent of client releases |
+| `ios-simulator-smoke.yml` — Verify iPadOS 27 startup | Exercise the native app from an exact private SHA on an iPad simulator | Build, XCTest results and screenshots; no publication or TestFlight upload |
 
 For a client release, prefer **preview → acceptance → promotion of the same
 bytes → distribution approval**. Direct stable builds remain available when no
@@ -92,6 +93,29 @@ gh workflow run pre-release.yml --repo lonelam/aalookup-hub \
 ```
 
 ## Candidate publication
+
+### iPad startup acceptance
+
+Before accepting a change to the iOS lifecycle, run the independent simulator
+check against the pushed application revision:
+
+```sh
+gh workflow run ios-simulator-smoke.yml --repo lonelam/aalookup-hub \
+  -f source_sha=<40-character-source-sha>
+```
+
+The `xcode-27` Apple Silicon runner supplies the iOS 27 SDK and simulator.
+The application-owned script builds an unsigned simulator app, validates its
+exported scene configuration, and exercises cold launch, sustained foreground,
+background/reactivation, and warm/cold lookup links through native XCTest.
+It uses a disposable iPad and supplies no real account or signing credentials.
+Only the existing read-only source credential is needed. The artifact contains
+environment and bundle metadata, application logs, screenshots and XCTest
+results; it does not contain the source checkout or installers. Inspect the
+screenshots and test outcome before recording acceptance. Simulator success is
+not physical-device upgrade or App Store approval.
+
+### Publishing the candidate
 
 `release.yml` publishes a stable `vX.Y.Z` tag as a public GitHub prerelease with
 `make_latest=false`, only after macOS, Windows, Android and iOS builds succeed.
