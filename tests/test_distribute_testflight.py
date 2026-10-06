@@ -121,6 +121,24 @@ class DistributionTests(unittest.TestCase):
         self.run_distribution(api)
         self.assertEqual(api.writes[0][:2], ("PATCH", "/v1/betaBuildLocalizations/notes"))
 
+    def test_new_build_null_notes_are_filled_before_review(self):
+        for locale, method, path in (("zh-Hans", "PATCH", "/v1/betaBuildLocalizations/notes"),
+                                     ("en-US", "POST", "/v1/betaBuildLocalizations")):
+            with self.subTest(locale=locale):
+                api = Apple()
+                api.notes = [{"id": "notes", "attributes": {"locale": locale, "whatsNew": None}}]
+                result = self.run_distribution(api)
+                self.assertEqual(api.writes[0][:2], (method, path))
+                self.assertEqual(api.writes[0][2]["data"]["attributes"]["whatsNew"], distribution.NOTES)
+                self.assertEqual(result["externalBuildState"], "WAITING_FOR_BETA_REVIEW")
+
+    def test_null_localization_does_not_replace_other_operator_notes(self):
+        api = Apple()
+        api.notes = [{"id": "empty", "attributes": {"locale": "zh-Hans", "whatsNew": None}},
+                     {"id": "authored", "attributes": {"locale": "en-US", "whatsNew": "Specific release notes"}}]
+        self.run_distribution(api)
+        self.assertFalse(any("Localizations" in path for _, path, _ in api.writes))
+
     def test_rejected_compliance_unknown_expired_and_wrong_identity_never_mutate(self):
         cases = [("state", "BETA_REJECTED"), ("state", "MISSING_EXPORT_COMPLIANCE"),
                  ("state", "NEW_UNKNOWN_STATE"), ("expired", True), ("bundle", "other.app"),

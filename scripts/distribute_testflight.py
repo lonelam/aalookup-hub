@@ -174,7 +174,7 @@ def distribute(client, version, number, timeout=1200, sleep=time.sleep, clock=ti
     build_id = build["id"]
     if state == "READY_FOR_BETA_SUBMISSION":
         localizations = client.rows(f"/v1/builds/{build_id}/betaBuildLocalizations")
-        if not any(row["attributes"].get("whatsNew", "").strip() for row in localizations):
+        if not any((row["attributes"].get("whatsNew") or "").strip() for row in localizations):
             existing = next((row for row in localizations if row["attributes"].get("locale") == "zh-Hans"), None)
             if existing:
                 client.call("PATCH", f"/v1/betaBuildLocalizations/{existing['id']}", {"data": {
