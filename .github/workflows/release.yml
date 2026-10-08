@@ -48,11 +48,15 @@ jobs:
       - name: Validate inputs
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          AALOOKUP_COMMUNITY_TOKEN: ${{ secrets.AALOOKUP_COMMUNITY_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           node <<'NODE'
           const sourceSha = process.env.SOURCE_SHA;
+          if (!process.env.AALOOKUP_COMMUNITY_TOKEN?.trim()) {
+            throw new Error("AALOOKUP_COMMUNITY_TOKEN is required for direct-download Community access");
+          }
           const version = process.env.VERSION;
           const semver = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -310,6 +314,7 @@ jobs:
       - name: Build and collect arm64, x86_64, and universal artifacts
         env:
           AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          AALOOKUP_COMMUNITY_TOKEN: ${{ secrets.AALOOKUP_COMMUNITY_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -538,6 +543,7 @@ jobs:
       - name: Build and collect NSIS installer
         env:
           AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          AALOOKUP_COMMUNITY_TOKEN: ${{ secrets.AALOOKUP_COMMUNITY_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
@@ -621,6 +627,7 @@ jobs:
       - name: Build signed APK and updater artifacts
         env:
           AALOOKUP_CLIENT_TOKEN: ${{ secrets.AALOOKUP_CLIENT_TOKEN }}
+          AALOOKUP_COMMUNITY_TOKEN: ${{ secrets.AALOOKUP_COMMUNITY_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GLITCHTIP_AUTH_TOKEN: ${{ secrets.GLITCHTIP_AUTH_TOKEN }}
